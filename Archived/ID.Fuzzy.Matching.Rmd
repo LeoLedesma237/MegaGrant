@@ -1,0 +1,328 @@
+---
+title: "ID.Cleaning.3"
+author: "Leandro Ledesma"
+date: "2024-05-10"
+output: html_document
+---
+
+
+### Universal block code settings
+
+```{r setup}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(message = FALSE)
+knitr::opts_chunk$set(comment = NULL)
+
+```
+
+
+### Load in packages
+
+```{r load in packages, warning = FALSE}
+library(readxl) # Import excel files
+library(tidyverse) # use tidyverse functions
+library(fuzzyjoin)
+library(kableExtra)
+```
+
+### Load in the Master Excel file created from Study 1 files
+
+
+```{r load in the data}
+# Set the working directory
+setwd("Y:/STUDY 1")
+
+# Load in the data
+Master <- read_excel("MegaGrant_TBL_Database_Newest.xlsx")
+
+```
+
+
+### Create a variable that reports sum of missing data by row
+
+```{r sum of missing data by row}
+# Create a missing data sum of all variables for each ID
+Master$Missing.num <- rowSums(is.na(Master))
+
+```
+
+### Getting to know our data
+
+The first column represents IDs. The next 18 columns indicate if data is present or not in Study1. Lastly, the last column shows the number of missing data per row. Therefore, if an ID contains all data, they should have a value of 0 for Missing.num, and if they have a value of 16 then they are missing everything but 1 data (not including ID and Missing.num).
+
+```{r glimpse the data}
+# Use the glimpse function
+glimpse(Master)
+
+# Summary of Missing.num
+# Develop a table showing the frequency of missing data
+missing.data.plot <- Master %>%
+  mutate(Missing.num = factor(Missing.num,
+                              levels = c(17:0))) %>%
+  group_by(Missing.num) %>%
+  count() %>%
+  ungroup() %>%
+  mutate(percentage = round(n/sum(n)*100,1))
+
+missing.data.plot %>%
+  ggplot(aes(x = Missing.num, y = percentage)) +
+  geom_bar(stat = "identity",
+           fill = "white",
+           color = "black") +
+  scale_y_continuous(expand = c(0,0), limits = c(0,85)) +
+  geom_text(aes(label = paste(format(round(percentage,1),
+                                     nsmall = 1),
+                              "%", sep = "")),
+                nudge_y = 3.2, size = 4) +
+  coord_flip() + 
+  theme_classic() +
+  labs(title = "Percentage of missing data number per\nunique ID in the Master Excel Sheet",
+       x = "Number of Missing Data",
+       y = "Percentage") +
+  theme(plot.title = element_text(size = 20,
+                                    hjust = 0.5),
+        axis.title = element_text(size = 14, face = "bold"),
+        axis.text = element_text(size = 14),
+        plot.caption = element_text(size = 12,
+                                    hjust = 0))
+  
+```
+
+### Removing subjects that have no missing data
+
+The point of fuzzy matching is to match potential typo IDs to real IDs that are missing data. Thus, there is no need to include IDs with full data. Doing so will make the matching more computationally demanding than it needs to be and introduces confusion.  
+
+```{r Saving an object of IDs that have at least one dat missing}
+# Create a new data frame that includes only subjects with 1 data missing. 
+Master.missing.at.leat.one <- Master %>%
+  filter(Missing.num >= 1)
+
+# Get the dimensions
+dim(Master.missing.at.leat.one)
+
+```
+### Part 1: Fuzzy matching IDs that NEED data to IDs that CONTAIN that data
+
+We need to first identify ID's that contain data for a single variable (X1) and ID's that do not contain data for that variable (X1). Next, we will extract the ID's from both groups and use fuzzy matching to see if any of the ID's from both groups have similar characters/numbers in the name. Additionally, we will mark the ID's that are missing data as IDs that NEED X1 and the corresponding matches that have that data as ID's that CONTAIN X1. This will be done for every single type of data (X1, X2, X3 ... X17)
+
+Thus, an ID that NEEDS data will be matched with an ID that CONTAINS the data. This approach will give us many matches, especially since the max_distance argument was set to 2. This will increase the likelyhood of returning false positives but should return to us all potential matches between real IDs and typo IDs. 
+
+
+```{r fuzzy matching part 1, warning = FALSE}
+# Create a list to store fuzzy match output
+fuzzy.matched.list <- list()
+
+# Run the for loop
+
+for (ii in 1:17) {
+
+  # Obtain ID's that have data for that variable
+  Contain.data.IDs <- Master.missing.at.leat.one[,c(1,ii+1)] %>%
+    filter(complete.cases(.)) %>%
+    select(ID) %>%
+    unlist()
+  
+  # Obtain the ID's that are missing data for that variable
+  Need.data.IDs <- Master.missing.at.leat.one[,c(1,ii+1)] %>%
+    filter(!complete.cases(.)) %>%
+    select(ID) %>%
+    unlist()
+  
+  # Obtain the number of data the IDs have and save it as a data frame
+  Contain.data.df <- Master.missing.at.leat.one %>%
+    filter(ID %in% Contain.data.IDs) %>%
+    select(ID, Missing.num)
+  
+  Need.data.df <- Master.missing.at.leat.one %>%
+    filter(ID %in% Need.data.IDs) %>%
+    select(ID, Missing.num)
+  
+  # Add a variable to what is needed and what is present
+  Contain.data.df$Contains = paste(names(Master.missing.at.leat.one)[ii+1])
+  Need.data.df$Needs = paste(names(Master.missing.at.leat.one)[ii+1])
+  
+  # Change variable order
+  Contain.data.df <- select(Contain.data.df, ID, Contains, Missing.num)
+  Need.data.df <- select(Need.data.df, ID, Needs, Missing.num)
+  
+  # Fuzzy match between datasets
+  fuzzy.matched.list[[ii]] <- stringdist_join(Need.data.df, Contain.data.df, 
+                  by='ID', #match based on ID
+                  mode='left', #use left join
+                  method = "osa", #use jw distance metric
+                  max_dist=2, 
+                  distance_col='dist') %>%
+    filter(complete.cases(.))
+  
+  # Add Names to the list
+  names(fuzzy.matched.list)[[ii]] <- names(Master.missing.at.leat.one)[ii+1]
+}  
+
+# Obtain the dimensions of the fuzzy.matched IDs
+fuzzy.matches.dim <- data.frame(`Potential Matches` = do.call(rbind,map(fuzzy.matched.list,dim))[,1])
+
+# Print the number of matches for each variable
+fuzzy.matches.dim %>%
+  kbl() %>%
+  kable_classic(full_width = F)
+
+# Print the sum of all matches
+sum(fuzzy.matches.dim$Potential.Matches)
+```
+
+#### Part 1: Conclusion
+
+
+From the output above, we are informed that there were several matches between ID's that need a data and ID's that contain it. This information is presented for each type of data (ex: Sex, Age ... RAW). However, there is still more to be done. There are current problems in the matches above that need to be addressed. One problem is that **both** real IDs and typo IDs are functioning as IDs that need and contain data. For example, if a real ID needs EEG data, then it will be fuzzy matched to a potential typo ID that contains that EEG data (Which is what we want). This also works in the reverse, if a typo ID needs EEG data (which it will plus a lot more other data types), then it will also be matched, in this case to a potential real ID (We do not want this). Thus, the numbers above are overestimated since they include a pool of real and typo IDs functioning as ID's that NEED data. The next two sections will be focused on correcting for this. 
+
+
+### Part 2: Removing Typo IDs that NEED data
+
+We need to establish from the ID pairs that are matched, which ones are the real IDs vs which ones are the typos. The easiest way to do this is by identifying the number of data types that are attributed to each ID. For example, a real ID is likely to have many different data types accounted for while a typo ID is likely to have one or a few. With this in mind, any ID's that NEED data, but turn out to NEED a lot of data, will be removed from the matches. I will set the threshold as missing more than 80% of the data as a clear indication of a typo- However, they could well be a subject that dropped the study and did not have more data collected. 
+
+```{r Keeping only the IDs that need data that have a lot of data}
+# Establishing a threshold
+typo.threshold <- 0.8 * 16
+
+# Create a list
+fuzzy.matched.list2 <- list()
+
+# Removing ID's that NEED data that have more than 80% of data missing
+for(ii in 1:length(fuzzy.matched.list)) {
+
+  # Extract the current list element
+  current.data <- fuzzy.matched.list[[ii]]
+  
+  # Remove IDs that NEED data when they are missing more than 80% of the data
+  fuzzy.matched.list2[[ii]] <- current.data %>%
+    filter(Missing.num.x < typo.threshold)
+  
+  # Add Names to the list
+  names(fuzzy.matched.list2)[[ii]] <- names(Master.missing.at.leat.one)[ii+1]
+  
+}
+
+# Obtain the dimensions of the fuzzy.matched IDs (2)
+fuzzy.matches.dim2 <- data.frame(`Potential Matches` = do.call(rbind,map(fuzzy.matched.list2,dim))[,1])
+
+# Print the number of matches for each variable
+fuzzy.matches.dim2 %>%
+  kbl() %>%
+  kable_classic(full_width = F)
+
+# Print the sum of all matches
+sum(fuzzy.matches.dim2$Potential.Matches)
+```
+
+#### Part 2: Conclusion
+
+The goal was to identify and remove Typo ID's that are functioning as ID's that NEED data. We only want real ID's (aka ID's we are certain are not typos) to function as this. Comparing the sum of matched ID's from this step to the original shows a reduction in matches by roughly 66%.   
+
+
+### Part 3: Removing real IDs from CONTAINS data
+
+We next need to focus on the function of ID's that CONTAIN data. We want this batch of ID's to contain potential typo ID's. It does not make sense to match a real ID that NEEDs data to another real ID that contains data just because their ID names are similar. Thus, we will be setting a threshold here for 60%, which indicated how much data an ID should have for them to be considered a real ID. Any real ID's that are functioning as ID's that CONTAIN data will be removed from the matches.
+
+```{r Keeping only the IDs that contain data that have a lot of missing data}
+# Establishing a threshold
+real.threshold <- 0.6 * 16
+
+# Create a list
+fuzzy.matched.list3 <- list()
+
+# Removing ID's that CONTAIN data that have more than 60% of data presemt
+for(ii in 1:length(fuzzy.matched.list)) {
+
+  # Extract the current list element
+  current.data <- fuzzy.matched.list2[[ii]]
+  
+  # Remove IDs that CONTAIN too much data, which shows they are likely real ID's
+  fuzzy.matched.list3[[ii]] <- current.data %>%
+    filter(Missing.num.y > real.threshold)
+  
+  # Add Names to the list
+  names(fuzzy.matched.list3)[[ii]] <- names(Master.missing.at.leat.one)[ii+1]
+  
+}
+
+# Obtain the dimensions of the fuzzy.matched IDs (2)
+fuzzy.matches.dim3 <- data.frame(`Potential Matches` = do.call(rbind,map(fuzzy.matched.list3,dim))[,1])
+
+# Print the number of matches for each variable
+fuzzy.matches.dim3 %>%
+  kbl() %>%
+  kable_classic(full_width = F)
+
+# Print the sum of all matches
+sum(fuzzy.matches.dim3$Potential.Matches)
+```
+
+#### Part 3: Conclusion
+
+From removing likely real ID's from the group of ID's that CONTAIN data, we can see that the matches have dropped down significantly to 66. It is now small enough where we can potentially investigate these by eye instead of using more code. 
+
+
+
+#### Part 4: Removing matches based on number of data attributed to both
+
+The remaining cases to consider are two potential real ID's that are matched together because they both are missing some data. In these cases, if we were to count the number of data that was present for both of these ID's, it would likely to exceed more than 17, which should not happen. Thus, we will add another variable that sums the number of data for both IDs. If it exceed 19, then those matches will be removed. The number 19 was chosen instead of 17 to give some wiggle room- just in case.
+
+```{r removing incompatiable matches}
+# Convert the list into a data frame
+fuzzy.matched3.df <- do.call(rbind,fuzzy.matched.list3)
+
+# Add a variable that sums how much data is present between the matched ID's
+fuzzy.matched4.df <- fuzzy.matched3.df %>%
+  mutate(Contains.x = 17 - Missing.num.x,
+         Contains.y = 17 - Missing.num.y,
+         Total.data = Contains.x + Contains.y)
+
+# Remove any matches that together would have more than 19 data
+fuzzy.matched4.df <- fuzzy.matched4.df %>%
+  filter(Total.data <= 19)
+
+# Print the sum of matches
+nrow(fuzzy.matched4.df)
+```
+
+
+#### Part 4: Print the table of potential matches
+
+Now that the number of matches is more manageable, we can print the table. As mentioned before, the max_distance argument was set to 2. Therefore, we can arrange the data frame to show the matches with a max_distance of 1 first, which are highly likely to be matches, and then show the remaining matches with a max_distance of 2 for visual inspection. 
+
+```{r print the table of matches}
+# Rearrange the variables to a format that makes more sense
+final.fuzzy.matched.df <- fuzzy.matched4.df %>%
+  select(ID.x,
+         Needs,
+         Contains.x,
+         Missing.num.x,
+         ID.y,
+         Contains,
+         Contains.y,
+         Missing.num.y,
+         Total.data,
+         dist) %>%
+  arrange(dist)
+
+# Rename the dataset to be more presentable
+names(final.fuzzy.matched.df) <- c("ID",
+                                   "Needs",
+                                   "Contains Data #",
+                                   "Missing Data #",
+                                   "ID",
+                                   "Contains",
+                                   "Contains Data #",
+                                   "Missing Data #",
+                                   "Total Data Between IDs",
+                                   "Dist")
+
+# Print the matches
+final.fuzzy.matched.df %>%
+  kbl() %>%
+  kable_classic(full_width = F) %>%
+  add_header_above(c("Real ID" = 4, "Potential Typo ID" = 4, " "= 2)) %>%
+  footnote(general = "Above we have a data set of Real ID's and potential Typo ID matches. Starting with the Real ID variables, the 'Needs' variable indicates data from the Real ID that is needed or missing. The 'Contains Data #' variable is present for quality control. If this ID is in fact a real ID, then we would expect it to have a good number of data types attributed to that ID. The 'Missing Data #' variable is complimentary to the 'Contains Data #' variable. For the Potential Typo ID section, the 'Contains' variable shows that data was found for that ID that is needed by the real ID. The 'Contains Data #' is a measure of how much data is attributed to the Typo ID. This is also important because we would expect Typo ID's to have very little data attributed to them. Lastly, the 'Total Data Between IDs' is another quality control variable, that shows if we were to merge data from both ID's that it would not go past the total number of data allowed (17) + 2 for additional wiggle room. The Dist variable indicates mathematically how different the Real ID is from the Typo ID, with a smaller number indicating more similarity. Thus we are very certain of matches at Dist 1 but not as certain for matches at Dist 2.")
+
+```
+

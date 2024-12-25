@@ -1,0 +1,183 @@
+---
+title: "Scoring the CFIT for MegaGrant"
+author: "Leandro Ledesma"
+date: "2024-03-14"
+output: html_document
+---
+
+### Reusing ONR CFIT scoring code
+
+We are going to be reusing most of the code that I have developed to score the CFIT for the ONR study. So if you happened to read over that document, a lot of what is present below was copied and pasted over. Some modifications were made to the excel file with the CFIT data for MegaGrant since it is a bit different, but not all that different. 
+
+
+The CFIT stands for the Culturally Fair Intelligence Tests developed by Raymond Cattell. This assessment contains four types of non-verbal IQ tests. We are interested in Scale 2 of this test, which is the medium difficulty version. Additionally Scale 2 contains Form A and Form B, both forms contain items that correspond to one of the four tests. We collected data strictly from Form B. Unfortunately, there is no standardized way to obtain IQ scores from performance on the CFIT Scale 2 Form B, thus we will only be reporting raw scores for each subject below. 
+
+Raw scores are calculated by taking the sum of correct responses from the four subtests. Meaning there will be one overall score. 
+
+### Universal block code settings
+
+```{r setup}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(message = FALSE)
+knitr::opts_chunk$set(comment = NULL)
+
+```
+
+### Load in the data manipulation packages first
+
+```{r loading in the packages, warning = FALSE}
+library(tidyverse)
+library(ggplot2)
+library(ggpubr)
+library(readxl)
+library(kableExtra)
+
+```
+
+### Load in the data
+
+```{r load in the data, warning = FALSE}
+# Set working directory
+setwd("Y:/STUDY 1/All Behavioral Data Organized/Usable CFIT Excels")
+
+# Load in the data
+CFIT <- read_excel("CFIT.xlsx")
+
+```
+
+### Picking variables of interest
+
+We are interested in the ID information and their responses for each item. So we will be keeping only those variables. 
+
+```{r data cleaining}
+# Keeping relevant variables
+CFIT <- CFIT %>%
+  select(ID, starts_with("CFITSub"))
+
+# There should be 1 variable for ID and 46 variables that indicate CFIT items for a total of 47 variables
+dim(CFIT)
+
+```
+
+### Data Cleaning
+
+There are some NA's present in the data- let's just replace those with 0. Additionally, not all the values for each variable are the same. Some have values of 1-4 but others have letters in the values such as A1 or A4. We will take all variables and remove any letters from those values- then coercing all the variables to be numerical. There seem to be 636 unique IDs in the data, which correspond to the number of rows in the dataset- thus there are no duplicates in our data.
+
+```{r quality control}
+# Total number of subjects in our data
+length(unique(CFIT$ID))
+
+# View the structure of our data
+str(CFIT)
+
+# Extract all variables that
+CFIT.items <- CFIT %>%
+  select_if(is.character) 
+
+# Extract only the numbers for each response
+responses.numeric.list <- list()
+
+for(ii in 1:length(CFIT.items)) {
+
+  # Extract the current variable and transform it into a vector
+  current.item <- unlist(CFIT.items[ii])
+  
+  # Transform this item by extracting only numbers and save it into a list
+  responses.numeric.list[[ii]] <- as.numeric(gsub("\\D", "", current.item))
+
+}
+
+# Merge the items back into a dataframe with IDs included
+CFIT.numeric <- responses.numeric.list %>%
+  do.call(cbind,.) %>%
+  cbind(ID = CFIT$ID) %>%
+  data.frame()
+  
+
+# Convert any NA's in the data into 0's
+CFIT.numeric[is.na(CFIT.numeric)] <- 0
+
+```
+
+
+
+### CFIT Scoring
+
+We are interested in obtain one raw score per person, thus we will be matching every response to that of the response key. Trials where the answer and response key match will be given a score of 1 and non-matching trials will be given a 0. All points will then be added together to produce our raw score. 
+
+```{r CFIT scoring, warning = FALSE}
+# Convert the data to long
+CFIT.long <- CFIT.numeric %>%
+  pivot_longer(-ID)
+
+# Set working directory
+setwd("~/ONR/IQ_data")
+
+# Load in the answer key 
+answer.key <- read_excel("CFIT Raw Score Key.xlsx")
+
+# Create a for loop to score each participant's performance on the CFIT
+Raw.score <- list()
+IDs.num <- unique(CFIT.long$ID)
+
+for(ii in 1:length(IDs.num)) {
+  
+  # Extract the data for the current ID
+  current.ID.df <- CFIT.long %>%
+    filter(ID == IDs.num[ii])
+  
+  # Add the scoring key variable to this data frame (46 values)
+  current.ID.df$scoring.key <- answer.key$Correct_Answers
+  
+  # Score the responses for the current data frame
+  current.ID.df <- current.ID.df %>%
+    mutate(Correct = ifelse(value == scoring.key, 1, 0))
+  
+  # Save the ID and the sum of all correct responses
+  Raw.score[[ii]] <- data.frame(ID = unique(current.ID.df$ID),
+                                CFIT = sum(current.ID.df$Correct, na.rm = TRUE))
+}
+
+# Save the Raw scores for each person
+Raw.score <- Raw.score %>%
+  do.call(rbind,.)
+
+
+# Check for any missing data
+Raw.score %>%
+  filter(!complete.cases(.))
+
+```
+
+
+### An Issue
+
+It seems that the responses on the raw data for the CFIT do not make any sense and that something we wrong with the scoring because of the values reported for each item. Fortunatelty, there are four columns where someone already has summed the number of correct items for each person. Thus, we will be using those numbers instead. It would have been nicer to do this by code- but I am short on time so I will trust their work instead.
+
+```{r using provided scores}
+# Set the working directory
+setwd("Y:/STUDY 1/All Behavioral Data Organized/Usable CFIT Excels")
+
+# Load in the data
+CFIT2 <- read_excel("CFIT.xlsx")
+
+# Save the columns with the sum of correct items for each of the four CFIT sub-tests. Also save the ID
+CFIT.final <- CFIT2 %>%
+  select(ID, Sub1Sum, Sub2Sum, Sub3Sum, Sub4Sum) %>%
+  transmute(ID,
+            Raw.Score = Sub1Sum + Sub2Sum + Sub3Sum + Sub4Sum)
+
+```
+
+
+### Save the data
+
+```{r save the data}
+# Set a save directory
+setwd("C:/Users/lledesma.TIMES/Documents/Masters Project/cleaned_predictor_covariates")
+
+# Save the data
+write_csv(x = CFIT.final, file = "CFIT.scores.csv")
+
+
+```

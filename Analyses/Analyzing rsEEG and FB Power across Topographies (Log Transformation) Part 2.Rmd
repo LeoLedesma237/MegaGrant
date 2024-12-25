@@ -1,0 +1,408 @@
+---
+title: "Analyzing rsEEG and FB Power across Topography Part 2"
+author: "Leandro Ledesma"
+date: "2024-10-11"
+output: html_document
+---
+### Universal block code settings
+
+```{r setup}
+knitr::opts_chunk$set(echo = FALSE)
+knitr::opts_chunk$set(message = FALSE)
+knitr::opts_chunk$set(comment = NULL)
+knitr::opts_chunk$set(warning = FALSE)
+
+```
+
+
+
+```{r loading in the packages, warning = FALSE}
+library(tidyverse)
+library(ggplot2)
+library(ggpubr)
+library(readxl)
+library(kableExtra)
+library(stringdist)
+library(broom) # Converts regression outputs into dataframes using the tidy() function
+library(psych)
+library(corrtable) # Potential correlation matrix code
+library(quantreg) # rq (quantile regreeion)
+library(MASS, exclude = "select") # This package is loaded with QuantPsyc, must exclude "select" or you wont be able to use it. 
+library(QuantPsyc) # Can use the lm.beta function to calculate the standardized betas
+library(car) # To calculate VIF
+library(purrr) # Allows for the usage of the map function
+library(interactions)
+```
+
+
+
+```{r load in all variables, warning= FALSE}
+# Set the working directory
+setwd("~/MegaGrant")
+
+# Load in the ARFA performance measures
+ARFA <- read.csv("Processed/BehavioralData/ARFA.Spelling.Errors.Scored.csv")
+
+# Add Spelling ERror Variable
+ARFA <- select(ARFA, ID, SpellingError = Total_SpellingError)
+
+# Load in the CFIT data
+CFIT <- read.csv("Processed/BehavioralData/CFIT.scores.csv")
+
+# Data cleaning
+CFIT <- select(CFIT, ID, CFIT = Raw.Scores)
+
+# Load in the rsEEG datasets
+eyes.closed <- read_excel("Processed/EEGData/EEG Eyes Open and Closed FB Power (Whitford, 2007).xlsx")
+
+# load in demographic information
+demo <- read_excel("MegaGrant_TBL.xlsx")
+
+# data cleaning
+demo <- demo %>%
+  select(ID, 
+         Sex, 
+         Age, 
+         Group) %>%
+  mutate(ID = as.numeric(ID),
+         Age = as.numeric(Age)) 
+```
+
+
+
+```{r combine the datasets}
+# Combine the the datasets by using the left_join function
+data <- demo %>%
+  full_join(CFIT, by = "ID") %>%
+  full_join(ARFA, by = "ID") %>%
+  full_join(eyes.closed, by = "ID")
+  
+```
+
+
+
+### Index subjects by those that met the requirements
+
+- No self-report injury
+- No Epilepsy
+- Removing missing data
+- No one below 'IQ' of 70 (more than 2 SD below the mean)
+- Extremely poor spellers (more than 3 SD below the mean)
+- Issues with EEG recordings
+- Did not survive EEG cleaning
+
+
+```{r keep non rejects subjects}
+# Set the working directory
+setwd("~/MegaGrant")
+
+# Load in the final sample data
+Final_Sample_Size <- read_excel("Processed/Final.Sample.Size.xlsx")
+
+# Index the data by the IDs in the final sample size
+data2 <- data %>%
+  filter(ID %in% Final_Sample_Size$ID)
+
+# Change ID into a factor
+data2$ID <- factor(data2$ID)
+
+```
+
+
+### Check for missing data
+
+```{r check for missing data}
+colSums(do.call(cbind,lapply(data2, function(x) is.na(x))))
+```
+
+
+### Descriptives
+
+```{r some general descriptives}
+# Use the describe function for these variables
+Age_info <- round(data.frame(describe(data2$Age)),2)
+CFIT_info <- round(data.frame(describe(data2$CFIT)),2)
+Spell_info <- round(data.frame(describe(data2$SpellingError)),2)
+
+# Rename the row
+row.names(Age_info) <- "Age"
+row.names(CFIT_info) <- "CFIT"
+row.names(Spell_info) <- "SpellingEr"
+
+# Binde them into one
+descriptives_bound <- rbind(Age_info, CFIT_info) %>% rbind(Spell_info)
+
+# Print out the table
+descriptives_bound %>%
+  kbl() %>% 
+   kable_classic_2(full_width = F)
+
+
+# Print out the frequency of groups
+table_descr <- data.frame(cbind(table(data2$Sex, data2$Group)))
+
+# Change the row names
+row.names(table_descr) <- c("Female", "Male")
+
+# Print the table
+table_descr %>%
+  kbl() %>% 
+   kable_classic_2(full_width = F)
+```
+
+### Graph the distributions of numeric variables (before log)
+
+```{r extract all continuous variables, out.width = "25%"}
+# Create an index for numeric variables
+num.indx <- which(lapply(data2, function(x) class(x)) %in% c("numeric", "integer"))
+
+# Extract all index variables
+num_df <- data2[,num.indx]
+
+# Create a for loop to graph each of these variables
+for(ii in 1:length(num_df)) {
+  
+  # Current variable
+  var <- num_df[,ii]
+  
+  # Save the name of the variable
+  name <- names(var)
+  
+  # Change it's name
+  names(var) <- c("x")
+  
+  # Plot the histogram
+  curplot <- var %>%
+    ggplot(aes(x=x)) +
+    geom_histogram(bins = 20,
+                   color = "black",
+                   fill = "white",
+                   size = 1.5) +
+    theme_minimal() +
+    labs(title = paste(name,"Histogram"),
+         x = NULL) +
+    theme(plot.title = element_text(size = 30,
+                                  hjust = 0.5),
+        axis.title = element_text(size = 30, face = "bold"),
+        axis.text = element_text(size = 30),
+        plot.caption = element_text(size = 8,
+                                    hjust = 0))
+  
+  # Plot it
+  plot(curplot)
+  
+}
+```
+
+### Graph the distributions of numeric variables (after log)
+
+```{r extract all continuous variables log, out.width = "25%"}
+# Convert all 0's to .1 or smt
+num_df <- tibble(data.frame(do.call(cbind,lapply(num_df, function(x) ifelse(x == 0, .1, x)))))
+
+
+# transform all the variables to log
+num_dflog <- log(num_df)
+
+# Change the names
+names(num_dflog) <- paste0(names(num_dflog),"_log")
+
+# Create a for loop to graph each of these variables
+for(ii in 1:length(num_dflog)) {
+  
+  # Current variable
+  var <- num_dflog[,ii]
+  
+  # Save the name of the variable
+  name <- names(var)
+  
+  # Change it's name
+  names(var) <- c("x")
+  
+  # Plot the histogram
+  curplot <- var %>%
+    ggplot(aes(x=x)) +
+    geom_histogram(bins = 20,
+                   color = "black",
+                   fill = "white",
+                   size = 1.5) +
+    theme_minimal() +
+    labs(title = paste(name,"Histogram (Log)"),
+         x = NULL) +
+    theme(plot.title = element_text(size = 28,
+                                  hjust = 0.5),
+        axis.title = element_text(size = 28, face = "bold"),
+        axis.text = element_text(size = 28),
+        plot.caption = element_text(size = 8,
+                                    hjust = 0))
+  
+  # Plot it
+  plot(curplot)
+  
+}
+```
+
+### Multicollinearity? (Correlation Matrix)
+
+```{r run a correlation matrix}
+# Select the variables to correlate
+cor_matrix <- select(num_dflog, Age_log, CFIT_log, SpellingError_log)
+
+# Run the correlation matrix
+data.frame(round(cor(cor_matrix),2)) %>%
+  kbl() %>% 
+   kable_classic_2(full_width = F)
+
+```
+
+
+### Converting data to Long format
+
+Data in R and most statistical software must (or mostly) be in long format to be compatible with statistical functions. 
+
+```{r creating the four variable datasets}
+# Identify the variables they will all share
+Front <- data2 %>% select(ID, Sex, Group)
+covLog <- num_dflog %>% select(Age_log, CFIT_log, SpellingError_log)
+delta <-  num_dflog %>% select(contains("delta"))
+theta <- num_dflog %>% select(contains("theta"))
+alpha <- num_dflog %>% select(contains("alpha"))
+beta <- num_dflog %>% select(contains("beta"))
+
+# Transform some variables into factors
+Front$Sex <- factor(Front$Sex)
+Front$Group <- factor(Front$Group)
+
+
+# Merge these final datasets together
+Delta <- cbind(Front, covLog,  delta)
+Theta <- cbind(Front, covLog, theta)
+Alpha <- cbind(Front, covLog, alpha)
+Beta <- cbind(Front, covLog,  beta)
+  
+# Transform these data into long format
+Delta.long <- Delta %>% 
+  pivot_longer(cols = contains("delta"), names_to = "Topography", values_to = "Power") %>%
+  mutate(Topography = unlist(lapply(strsplit(Topography, "_"), function(x) x[1])),
+         Topography = factor(Topography))
+
+Theta.long <- Theta %>%
+  pivot_longer(cols = contains("theta"), names_to = "Topography", values_to = "Power") %>%
+  mutate(Topography = unlist(lapply(strsplit(Topography, "_"), function(x) x[1])),
+         Topography = factor(Topography))
+
+Alpha.long <- Alpha %>%
+  pivot_longer(cols = contains("alpha"), names_to = "Topography", values_to = "Power") %>%
+  mutate(Topography = unlist(lapply(strsplit(Topography, "_"), function(x) x[1])),
+         Topography = factor(Topography))
+
+Beta.long <- Beta %>%
+  pivot_longer(cols = contains("beta"), names_to = "Topography", values_to = "Power") %>%
+  mutate(Topography = unlist(lapply(strsplit(Topography, "_"), function(x) x[1])),
+         Topography = factor(Topography))
+```
+
+
+
+### Analysis Plan (Simple- no interactions)
+
+Simplifying the analysis by investigating the relationship between spelling and power at 4 frequency bands (delta, theta, alpha, beta) while controlling for age, and topography. Since there are 4 outcome variables then we will be interpreting 4 models. 
+
+We will be using dummy coding for right now, thus the intercepts of the model will represent the power of the frontal region for a female raised by her biological family. 
+
+- Type I sums of squares were used for calculating the p values
+
+```{r creating our first analyses}
+# We will be running four regressions
+contrasts(Alpha.long$Topography)
+contrasts(Alpha.long$Sex)
+contrasts(Alpha.long$Group)
+
+# Run the first four models
+model1a <- lm(Power ~ Age_log + Sex + CFIT_log + Group + Topography + SpellingError_log, data = Delta.long) 
+model2a <- lm(Power ~  Age_log + Sex + CFIT_log + Group + Topography + SpellingError_log, data = Theta.long) 
+model3a <- lm(Power ~  Age_log + Sex + CFIT_log + Group + Topography + SpellingError_log, data = Alpha.long) 
+model4a <- lm(Power ~  Age_log + Sex + CFIT_log + Group + Topography + SpellingError_log, data = Beta.long) 
+  
+# Print out the model summaries
+summary(model1a)
+summary(model2a)
+summary(model3a)
+summary(model4a)
+```
+### Analysis Plan (2 way-interactions)
+
+Is spelling error predictive of absolute power in some ages but not others? Thus, here we regress absolute power for four frequency bands (delta, theta, alpha, beta) on the same covariates as above with an age x spelling error interaction. 
+
+- Type III sums of squares were used for calculating the p values
+- Gives us more power when examining interactions
+- Order of the covariates should not matter
+
+```{r second models using a two way interaction}
+# Run the first four models
+model1b <- lm(Power ~ Sex + CFIT_log + Group + Topography + Age_log*SpellingError_log, data = Delta.long) 
+model2b <- lm(Power ~ Sex + CFIT_log + Group + Topography + Age_log*SpellingError_log, data = Theta.long) 
+model3b <- lm(Power ~ Sex + CFIT_log + Group + Topography + Age_log*SpellingError_log, data = Alpha.long) 
+model4b <- lm(Power ~ Sex + CFIT_log + Group + Topography + Age_log*SpellingError_log, data = Beta.long) 
+  
+
+# run the model with type 3 SS
+Anova(model1b, type = "III")
+Anova(model2b, type = "III")
+Anova(model3b, type = "III")
+Anova(model4b, type = "III")
+```
+
+
+### Analysis Plan (3 way-interactions)
+
+This is ambitious, what if the interaction of spelling error and age in predicting absolute power differed depending on the topographical location? Thus this overly ambitious three-way interaction was tested to see if that is the case. Since we have ~450 subjects, we may have enough power to test if this is true- not sure though. 
+
+- Type III sums of squares were used for calculating the p values
+
+```{r third model using a three way interaction}
+# Run the first four models
+model1c <- lm(Power ~ Sex + CFIT_log + Group + Topography*Age_log*SpellingError_log, data = Delta.long) 
+model2c <- lm(Power ~ Sex + CFIT_log + Group + Topography*Age_log*SpellingError_log, data = Theta.long) 
+model3c <- lm(Power ~ Sex + CFIT_log + Group + Topography*Age_log*SpellingError_log, data = Alpha.long) 
+model4c <- lm(Power ~ Sex + CFIT_log + Group + Topography*Age_log*SpellingError_log, data = Beta.long) 
+  
+
+# run the model with type 3 SS
+Anova(model1c, type = "III")
+Anova(model2c, type = "III")
+Anova(model3c, type = "III")
+Anova(model4c, type = "III")
+```
+
+### Two-Way Interaction model seems to be the best and most informative.
+
+We have decided to proceed the remaining of the analysis by focusing solely on the models that used a two-way interaction. 
+
+### Visualizing the interactions
+
+The graphs show the interaction for:
+
+- Plot1: Delta (p = ns)
+- Plot2: Theta (p = ns)
+- Plot3: Alpha (p = ns)
+- Plot4: Beta (p < .001)
+
+```{r visualizing the interaction, out.width = "45%"}
+# Plot the interaction effect of delta 
+interact_plot(model = model1b, pred = SpellingError_log, modx = Age_log)
+interact_plot(model = model2b, pred = SpellingError_log, modx = Age_log)
+interact_plot(model = model3b, pred = SpellingError_log, modx = Age_log)
+interact_plot(model = model4b, pred = SpellingError_log, modx = Age_log)
+
+```
+
+### Model Assumptions
+
+```{r plot the residuals of the models, out.width="45%"}
+plot(model1b, which = 1:2)
+plot(model2b, which = 1:2)
+plot(model3b, which = 1:2)
+plot(model4b, which = 1:2)
+
+```

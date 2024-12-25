@@ -1,0 +1,164 @@
+---
+title: "Exploring Cleaned Master Excel Sheet"
+author: "Leandro Ledesma"
+date: "2024-01-25"
+output: html_document
+---
+
+### Universal block code settings
+
+```{r setup}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(message = FALSE)
+knitr::opts_chunk$set(comment = NULL)
+```
+
+### MegaGrant Cleaned Master Excel Sheet Data Exploration
+
+This document will be further investigating the cleaned version of the Master Excel Sheet that contains information over the number of unique IDs in our dataset and the data that is currently avaiable for these IDs.
+
+### Load in the data manipulation packages first
+```{r cars, warning = FALSE}
+library(tidyverse)
+library(ggplot2)
+library(readxl)
+library(gt)
+```
+
+### Load in the data
+
+```{r Load in the data}
+# The cleaned master excel file is saved locally on my times computer
+# In my documents > Master's Project
+
+# Set working directory
+setwd("~/Masters Project")
+
+
+# Load in the data
+masterData <- read_excel("MegaGrant_TBL_.xlsx")
+
+```
+
+
+### Exploring the data
+
+We can see there are 700 observations/rows and 21 variables, which I will quickly give a quick description of.
+The first variable is the ID, followed by Study3, which indicates if this subject participated in an additional study in the future. The next few variables relate to demographics, followed by behavioral assessments and then neuroimaging data.
+
+This excel file's job is to inform us of what data we do and do not have from these unique ID's. There is relatively useful/meaningful information below, such as information of the Sex, Age, and Group (BF vs IC) for each ID, but there is no ARFA or EEG data here present- instead this data is saved in a specific folder in the server.
+
+Thus we are using this dataset to inform us of our expectations in terms of how many participants we will have in our final N based on our variables of interest and to give us some descriptive statistics of our chosen participants. However, these numbers may change by the time we get to the analysis. For example, EEG data has to be cleaned and prepared for analysis and sometimes, the EEG data may be of poor quality, making us exclude it. 
+
+Therefore, the remaining numbers reported should be seen as the max number of participants we will have for our analysis if everything goes well, which we probably won't.
+
+
+```{r exploring the data}
+# Data dimensions
+dim(masterData)
+
+# Unique ID number
+unique(masterData$ID) %>% length()
+```
+
+### Our variables of interest
+
+I am taking an exploratory approach to investigate if brain activity at rest is associated with linguistic related performance. Therefore we will need to obtain the ID's of participants that have both linguistic data and resting-state EEG (rsEEG) data. Additionally, we want ID's that also have demographic data and other data that we would want to control for.
+
+Thus, we will be selecting ID's that specifically have data for the following: 
+
+1) Sex (M or F)
+2) Age (14-39 yrs-old)
+3) Group (Biological Family;BF vs Institutionalized; IC)
+4) CFIT? (IQ Measure)
+5) ARFA (Language Assessment)
+6) Raw (rsEEG)
+
+
+```{r}
+# Select the variables of interest from our masterData
+# Keep only the rows that have no missing data
+finalData <- masterData %>%
+  select(ID, Sex, Age, Group, CFIT, ARFA, RAW) %>%
+  filter(complete.cases(.))
+
+```
+
+### Ideally our final data
+
+If all data quality from the CFIT, ARFA and RAW for all rows is adequate, then this is what we would expect for our final analysis. To have 604 participants with the following descriptive statistics.
+
+Sex: There are 261 Males out of our 604 sample (43%).
+Age: A histogram shows that most of participants are between 15-25 years old, but there are still participants that are older, up to around 40, which skews the distribution to the right.
+Group: Group indicates how the participant was reared, either by their biological family (BF) or they were institutionalized (IC)- meaning orphanage or similar environment. There are 317 BF out of our 604 sample (53%).
+
+
+```{r exploring our ideal finaly data}
+# Check the dimensions of our final data
+dim(finalData)
+
+# Unique ID number
+unique(finalData$ID) %>% length()
+
+# Check gender sample size
+finalData %>%
+  group_by(Sex) %>%
+  count() %>%
+  ungroup() %>%
+  gt(rowname_col = "Sex") %>%
+  tab_header(
+    title = "Number of participants by sex"
+  ) %>%
+  tab_stubhead(
+    label = "Sex"
+  ) %>% 
+  cols_width(
+    Sex ~ px(80),
+    n ~ px(120)
+  ) 
+
+# Age distribution
+finalData %>%
+  mutate(Age = as.numeric(Age)) %>%
+  ggplot(aes(x= Age)) +
+  geom_histogram(aes(y = ..density..), 
+                 color = "black", 
+                 fill = "white", 
+                 bins = 15) +
+  scale_x_continuous(breaks = round(seq(min(finalData$Age), 
+                                        max(finalData$Age), by = 5),1)) +
+  scale_y_continuous(expand = c(0,0), limits = c(0,.2)) +
+  theme_classic() +
+  labs(title = "Age scores distribution",
+       x = "Age (years)",
+       y = "Density") +
+  theme(plot.title = element_text(size = 14,
+                                  hjust = 0.5),
+        axis.title = element_text(size = 10, face = "bold"),
+        axis.text = element_text(size = 10),
+        plot.caption = element_text(size = 11,
+                                    hjust = 0))
+
+
+# Check Group sample size
+finalData %>%
+  group_by(Group) %>%
+  count() %>%
+  ungroup() %>%
+  gt(rowname_col = "Group") %>%
+  tab_header(
+    title = "Number of participants by Group"
+  ) %>%
+  tab_stubhead(
+    label = "Group"
+  ) %>% 
+  cols_width(
+    Group ~ px(80),
+    n ~ px(120)
+  ) 
+  
+
+
+```
+
+

@@ -1,0 +1,347 @@
+---
+title: "Calculating Frequency Band Power"
+author: "Leandro Ledesma"
+date: "2024-03-12"
+output: html_document
+---
+
+# Read Cohen's book to remind myself what this all is
+
+
+
+### Universal block code settings
+
+```{r setup}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(message = FALSE)
+knitr::opts_chunk$set(comment = NULL)
+
+```
+
+### Load in the data manipulation packages first
+
+```{r loading in the packages, warning = FALSE}
+library(tidyverse)
+library(ggplot2)
+library(ggpubr)
+library(readxl)
+library(kableExtra)
+
+```
+
+### Load in the data
+
+First we will load in the ID's (including those discovered through fuzzy matching) of the rsEEG data that survived the preprocessing stage. There should 466 of them. Each file read will have an ID variable added that comes from the name of the file. However, it seems only 462 make the final cut. 
+
+```{r load in the data, warning = FALSE}
+# set the working directory for rsEEG files that survived the preprocessing stage
+setwd("C:/Users/lledesma.TIMES/Documents/Masters Project")
+
+# Load in the ID's
+eeg.IDs.survived <- read.csv("Preprocessed.rsEEG.csv") %>% unlist()
+
+# Set the working directory
+setwd("Y:/STUDY 1/All EEG Files Organized/Preprocessed_RAW/RAW_eyes_open_and_eyes_closed_FFT")
+
+# list all of the rsEEG files that have FFT data
+all.FFT.files <- list.files()
+
+# Record all of the file names in this directory that contain the ID's from above that survived
+FFT.files.list <- list()
+
+for(ii in 1:length(eeg.IDs.survived)) {
+  
+  # Isolate the current EEG file you are trying to find 
+  current.pattern = eeg.IDs.survived[ii]
+  
+  # Use that current EEG file to find the proper name from all the FFT files
+  current.file <- all.FFT.files[grepl(pattern = current.pattern,
+                                      x = all.FFT.files)]
+
+  # Equaling the current.file to 1 prevents the following two errors
+  # a) loading in a file that survived preprocessing but was not present in FFT
+  # b) loading in two files that share the same ID because of tester error
+  if(length(current.file) == 1 ) {  
+
+  # Read in the file and save it as an object
+  setwd("Y:/STUDY 1/All EEG Files Organized/Preprocessed_RAW/RAW_eyes_open_and_eyes_closed_FFT")
+  read.file <-  read.csv(current.file)
+  
+  # Give this file an ID variable and place it in the front
+  read.file <- read.file %>%
+    mutate(ID = as.numeric(gsub("\\D", "", current.file))) %>%
+    select(ID, Channels, everything())
+    
+  # Read that FFT file in and save it into the list
+  FFT.files.list[[ii]] <- read.file
+  
+  }
+}
+
+
+```
+
+### Explore the FFT data
+
+Each file has 180 variables and 62 rows. The rows represent the electrical activity from a channel, and there are 62 unique channels. We can group them later by topographical location. The variables, on the other hand, that have x followed by a number represent the power of that frequency band. It starts at .5 Hz and goes up by .25 Hz until it reaches 45Hz. The numbers in the cells represent power. 
+
+What we can do for a quick quality control check is to just pick a channel and then plot the values across the spectrum using ggplot. We will use Cz. 
+
+```{r explore the FFT data}
+# Save one of the FFT datasets from the list
+current.data <- FFT.files.list[[9]]
+
+# Obtain the dimensions
+dim(current.data)
+
+# view the first few rows and first 10 variables
+head(current.data)[1:10] %>%
+  kbl() %>%
+  kable_paper(bootstrap_options = "striped", full_width = F)
+
+# plot the power spectrum of a subject using channel 
+Cz.data <- current.data %>%
+  filter(Channels == "Cz")
+
+Cz.data.long <- Cz.data %>%
+  pivot_longer(cols = - c(ID,Channels),
+               names_to = "Frequency_Band_Num",
+               values_to = "Power") %>%
+  mutate(Frequency_Band_Num = gsub(pattern = "x",
+                               x = Frequency_Band_Num,
+                               replacement = ''),
+         Frequency_Band_Num = as.numeric(Frequency_Band_Num))
+
+Cz.data.long %>%
+  ggplot(aes(x = Frequency_Band_Num, y = Power, group = 1)) +
+  geom_point() +
+  geom_line() +
+  labs(x = "Frequency (Hz)",
+       y = "Power Spectral Density") +
+  theme_classic() +
+  labs(title = "CZ - eyes open") +
+  theme(plot.title = element_text(size = 18,
+                                  hjust = 0.5),
+        axis.title = element_text(size = 12, face = "bold"),
+        axis.text = element_text(size = 12),
+        plot.caption = element_text(size = 13,
+                                    hjust = 0))
+
+
+# Let's try to graph the power spectrum for the whole head
+current.data.whole.head <- current.data %>%
+  select(-c(ID, Channels)) %>%
+  colSums() %>%
+  data.frame(Power =.)
+
+# Add frequencies back as a variable
+current.data.whole.head$Frequency_Band_Num <- row.names(current.data.whole.head)
+
+# Extra data cleaning
+current.data.whole.head <- current.data.whole.head %>%
+mutate(Frequency_Band_Num = gsub(pattern = "x",
+                               x = Frequency_Band_Num,
+                               replacement = ''),
+         Frequency_Band_Num = as.numeric(Frequency_Band_Num))
+
+
+current.data.whole.head %>%
+  ggplot(aes(x = Frequency_Band_Num, y = Power, group = 1)) +
+  geom_point() +
+  geom_line() +
+  labs(x = "Frequency (Hz)",
+       y = "Power Spectral Density") +
+  theme_classic() +
+  labs(title = "Across Scalp - eyes open") +
+  theme(plot.title = element_text(size = 18,
+                                  hjust = 0.5),
+        axis.title = element_text(size = 12, face = "bold"),
+        axis.text = element_text(size = 12),
+        plot.caption = element_text(size = 13,
+                                    hjust = 0))
+
+```
+
+
+### Reducing data dimensionality (Frequency Bands)
+
+Our next step is to take every FFT file and average the power for each frequency band. Doing this will turn our number of variables from 180 to 6, which include the following:
+
+- Channels
+- Delta (0.5-4Hz)
+- Theta (4-8Hz)
+- Alpha (8-12Hz)
+- Beta (12-30Hz)
+- Gamma (30-45Hz)
+
+This is how we will write it up by every frequency band ends at .75 of the previous whole number. Before we start, we will take our list of subjects and combine them into one major list
+
+```{r reducing the number of variables by averaging}
+# Take all of the FFT files in the list and convert them into one
+FFT.files <- FFT.files.list %>%
+  do.call(rbind,.)
+
+# Quality check to see what ID's are present
+length(unique(FFT.files$ID))
+
+
+# Convert the data into long format
+FFT.files.long <- FFT.files %>%
+  pivot_longer(cols = - c(ID, Channels),
+               names_to = "Frequency_Band_Num",
+               values_to = "Power") %>%
+  mutate(Frequency_Band_Num = gsub(pattern = "x",
+                               x = Frequency_Band_Num,
+                               replacement = ''),
+         Frequency_Band_Num = as.numeric(Frequency_Band_Num))
+
+# Create a variable that categorizes the frequency band num into one of the typical bands seen in the literature
+FFT.files.averged.frequency.band <- FFT.files.long %>%
+  mutate(Frequency_Band = case_when(
+    
+    between(FFT.files.long$Frequency_Band_Num, 0, 3.75) ~ 'delta',
+    between(FFT.files.long$Frequency_Band_Num, 4, 7.75) ~ 'theta',
+    between(FFT.files.long$Frequency_Band_Num, 8, 11.75) ~ 'alpha',
+    between(FFT.files.long$Frequency_Band_Num, 12, 29.75) ~ 'beta',
+    TRUE ~ 'gamma'
+  
+    ))
+
+# Group the data by ID, and channels and by frequency band, then get the averaged power for each of these groupings
+averaged.ID.frequency.band.power <- FFT.files.averged.frequency.band %>%
+  group_by(ID, Channels, Frequency_Band) %>%
+  summarize(avg_power = mean(Power))
+
+# Let's get the new dimensions
+dim(averaged.ID.frequency.band.power)
+
+```
+
+The dataset we created above has the power for each person (462) for each channel (62) and for each frequency band (5), which is equal to 462 x 62 x 5 = 134,220.
+
+### Reducing data dimensionality (Channels)
+
+The next thing we want to do is to group up the channels based on topographical location. We will transform our 62 channels into the following 5 categorical values:
+
+- frontal: 
+- central: 
+- temporal: 
+- parietal: 
+- occipital: 
+
+```{r reducing channels into 5 topographical locations}
+# Create vectors that correspond to the channels topographical location
+frontal <- c("AF3", "AF4", "AF7", "AF8", "AFz", "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "Fz", "Fp1", "Fp2")
+central <- c("FC1", "FC2", "FC3", "FC4", "FC5", "FC6", "FCz", "C1",   "C2", "C3", "C4", "C5", "C6", "Cz","CP1", "CP2", "CP3", "CP4", "CP5", "CP6", "CPz")
+temporal <- c("FT10", "FT7",  "FT8",  "FT9", "T7", "T8",  "TP7", "TP8")
+parietal <- c("P1", "P2", "P3",  "P4",  "P5",  "P6",  "P7",  "P8", "Pz")
+occipital <- c("O1", "O2", "Oz", "PO3", "PO4", "PO7", "PO8", "POz")
+
+# Create a variable that categorizes the frequency band num into one of the typical bands seen in the literature
+final.data.long <- averaged.ID.frequency.band.power %>%
+  mutate(Topography = case_when(
+    
+    Channels %in% frontal ~ 'frontal',
+    Channels %in% central ~ 'central',
+    Channels %in% temporal ~ 'temporal',
+    Channels %in% parietal ~ 'parietal',
+    Channels %in% occipital ~ 'occipital',
+    TRUE ~ 'Not Used'
+  
+    ))
+
+# Quality check to see if any channels were not assigned to a topographical group
+final.data.long %>%
+  filter(Topography == "Not Used") %>%
+  ungroup() %>%
+  select(Channels) %>%
+  unique()
+
+# Group the data by ID, topography and by frequency band, then get the averaged power for each of these groupings
+final.data <- final.data.long %>%
+  group_by(ID, Topography, Frequency_Band) %>%
+  summarize(avg_power = mean(avg_power))
+
+# Let's get the new dimensions
+dim(final.data)
+```
+
+For every person (462) there is the averaged power for frequency bands (5) and topographical location (5), which equals to 462 x 5 x 5 = 11550 rows.
+
+### Quality Control
+
+Now that we have gotten our final data, let's do some quality control before saving it. We need to figure out how many subjects we have and how many unique topographies are present.
+
+```{r quality control}
+# Check the number of ID's present on our final dataset
+length(unique(final.data$ID))
+
+# Check the proportions of topographical locations- they should all be the same
+prop.table(table(final.data$Topography))
+
+# Lastly, check the proportions of frequency bands- they should also all be the same
+prop.table(table(final.data$Frequency_Band))
+```
+
+
+### Last data transformation
+
+For our dependent variables, which are the information in this data frame, to be used by a statistical code, they need to be in wide format and not long. Thus we will now transfer our data back into a wide format and later deside which rows and columns we want to keep for our final analysis.
+
+Additionally, if we end up not needing to analyze topography, we have also create a data transformation that just averages power across the whole scalp.
+
+```{r conver the data into wide}
+# Covert the data into wide
+final.data.wide.topography <- final.data %>%
+  pivot_wider(names_from = Frequency_Band,
+              values_from = avg_power) %>%
+  select(ID, Topography, delta, theta, alpha, beta, gamma)
+
+final.data.wide.no.topography <- final.data.wide.topography %>%
+  group_by(ID) %>%
+  summarize(delta = mean(delta),
+            theta = mean(theta),
+            alpha = mean(alpha),
+            beta = mean(beta),
+            gamma = mean(gamma))
+```
+
+
+### Checking the assumptions 
+
+Before we are finished- it is good practice for us to know what our data look like (for dependent variables). If they do not look normally distributed, then that would influence which statistical approach we can use. Let's just look at the histograms for the frequency bands in the non-topographical data. We can graph the others once we figure out what approach we want to take. 
+
+```{r checking the assumptions}
+# Graph the power for delta
+hist(final.data.wide.no.topography$delta)
+
+# Graph the power for theta
+hist(final.data.wide.no.topography$theta)
+
+# Graph the power for alpha
+hist(final.data.wide.no.topography$alpha)
+
+# Graph the power for beta
+hist(final.data.wide.no.topography$beta)
+
+# Graph the power for gamma
+hist(final.data.wide.no.topography$gamma)
+
+```
+
+
+### Saving files
+
+We will be saving this data set as one large CSV file to be joined with our predictor variables in the next code. 
+
+```{r save the data}
+# Set the saving directory
+setwd("~/Masters Project/cleaned_dependent_variable")
+
+# Save the 462 files with topography
+write_csv(final.data.wide.topography, file = "Frequency.Bands.Topography.csv")
+
+# Save the 462 files without topography
+write_csv(final.data.wide.no.topography, file = "Frequency.Bands.No.Topography.csv")
+
+```

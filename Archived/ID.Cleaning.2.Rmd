@@ -1,0 +1,291 @@
+---
+title: "ID.Cleaning.2"
+author: "Leandro Ledesma"
+date: "2024-05-10"
+output: html_document
+---
+
+### Universal block code settings
+
+```{r setup}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(message = FALSE)
+knitr::opts_chunk$set(comment = NULL)
+
+```
+
+### Load in packages
+
+```{r load in packages, warning = FALSE}
+library(readxl) # Import excel files
+library(tidyverse) # use tidyverse functions
+library(writexl) # Save dataframe as an excel file
+
+```
+
+Scripts were used to organize files in the Study 1 directory. Our next step is to go into each folder within this directory (that is not archived) and obtain the ID's for the following tasks/recordings:
+
+
+- Sight
+- Sex
+- Age
+- Group
+- SchoolType
+- ARFA
+- ASR
+- BRIEF
+- CFIT
+- WHOOQL
+- Hand
+- Medical
+- ANT
+- N170
+- N400
+- P300
+- RAW
+
+### All behavioral data organized
+
+This is a directory that contains excel sheets with information about ARFA, ASR, BRIEF, CFIT, and WHOQL. The ID's in these excel sheets will be extracted to create a data frame with a paired '+' symbol, which indicates that there is data present for that ID.
+
+```{r load in the IDs that have behavioral data, warning = FALSE}
+# Set the working directory
+setwd("Y:/STUDY 1/All Behavioral Data Organized")
+
+# Load in each excel file
+ARFA <- read_excel("Usable ARFA Excels/AdultStudy_ARFA_Study1.copy.xlsx")
+ASR <- read_excel("Usable ASR Excels/ASR.xlsx")
+BRIEF <- read_excel("Usable BRIEF Excels/BRIEF.xlsx")
+CFIT <- read_excel("Usable CFIT Excels/CFIT.xlsx")
+WHOQL <- read_excel("Usable WHOQL Excels/WHOQL.xlsx")
+
+# Save the ID variable only
+ARFA <- unique(select(ARFA,ID))
+ASR <- unique(select(ASR,ID))
+BRIEF <- unique(select(BRIEF,ID))
+CFIT <- unique(select(CFIT,ID))
+WHOQL <- unique(select(WHOQL,ID)) 
+
+# Add another variable indicating that the respective data is available
+ARFA <- mutate(ARFA, ARFA = "+")
+ASR <- mutate(ASR, ASR = "+")
+BRIEF <- mutate(BRIEF, BRIEF = "+")
+CFIT <- mutate(CFIT, CFIT = "+")
+WHOQL <- mutate(WHOQL, WHOQL = "+")
+
+```
+
+### All demographics organized (+ Groups)
+
+This directory contains two excel files. One with Sight, Group, and schoolType information (Groups), and the other with Sex, and Age (Demo). For these variables, we will report the actual values instead of a '+' indicating if it is there. The 'Groups' information comes from the original 'Master Excel Sheet' that was provided to us. 
+
+```{r load in the demographic information.}
+# Set working directory
+setwd("Y:/STUDY 1/All Demographics Organized")
+
+# Load in the demographic information
+Demo <- read_excel("Completed STUDY 1 Demographics.xlsx") %>%
+  select(ID:Age)
+
+# Load in the Sight, Group, and schoolType
+Groups <- read_excel("Sight, Group, SchoolType.xlsx")
+```
+
+
+### All hand and med organized
+
+Here we will be importing hand and medical record information. ID's that have the data available will be paired with a '+'.
+
+```{r load in the IDs with hand and med data, warning = FALSE}
+# Set working directory
+setwd("Y:/STUDY 1/All Hand and Med Organized")
+
+# Load in the data
+Hand <- read_excel("Usable Hand Excels/Handness.xlsx")
+Medical <- read_excel("Usable Med Excels/MedicalInfo.xlsx")
+
+# Save the ID variable only
+Hand <- unique(select(Hand,ID))
+Medical <- unique(select(Medical,ID))
+
+# Add another variable indicating that the respective data is available
+Hand <- mutate(Hand, Hand = "+")
+Medical <- mutate(Medical, Medical = "+")
+
+```
+
+
+### All EEG files organized
+
+This is where the code is going to get tricky. We need to extract ID's from file names. Each EEG recording should come with three files. For our purposes, we are only interested in .eeg files present in the directory. Next we need to extract the ID's from the file names. We will need to manually inspect each EEG directory and then identify a game plan to how to go about identifying the IDs.
+
+
+After closer inspection, all EEG files are named with the ID number first, followed by an underscore, and then the name of the task. 
+
+Ex: 10249_N400
+
+With this in mind, we can run a script to extract the numbers that come before the underscore '_' for each file name. These ID's would then be turned into a dataframe with a '+' symbol paired, indicating that the respective ID has data for that EEG recording. 
+
+#### ANT
+  
+
+```{r load in the IDs for ANT, warning = FALSE}
+# Set the working directory for ANT
+setwd("Y:/STUDY 1/All EEG Files Organized/ANT")
+
+# Load in all the file names from this directory
+ANT.all.files <- list.files()
+
+# Keep only the EEG files
+ANT.eeg.files <- ANT.all.files[grepl(".eeg",ANT.all.files)]
+
+# Split the string and keep the first part
+IDs <- do.call(rbind,str_split(ANT.eeg.files,"_"))[,1]
+
+# Convert these IDs into numbers- which will remove test run files
+IDs <- unique(IDs[complete.cases(as.numeric(IDs))])
+
+# Convert them into a dataframe and include the + for ANT data
+ANT <- data.frame(ID = as.numeric(IDs),
+                  ANT = rep("+",length(IDs)))
+```
+
+#### N170
+
+
+```{r load in the IDs for N170, warning = FALSE}
+# Set the working directory for ANT
+setwd("Y:/STUDY 1/All EEG Files Organized/N170")
+
+# Load in all the file names from this directory
+N170.all.files <- list.files()
+
+# Keep only the EEG files
+N170.eeg.files <- N170.all.files[grepl(".eeg",N170.all.files)]
+
+# Split the string and keep the first part
+IDs <- do.call(rbind,str_split(N170.eeg.files,"_"))[,1]
+
+# Convert these IDs into numbers- which will remove test run files
+IDs <- unique(IDs[complete.cases(as.numeric(IDs))])
+
+# Convert them into a dataframe and include the + for ANT data
+N170 <- data.frame(ID = as.numeric(IDs),
+                   N170 = rep("+",length(IDs)))
+```
+
+
+#### N400
+
+
+```{r load in the IDs for N400, warning = FALSE}
+# Set the working directory for ANT
+setwd("Y:/STUDY 1/All EEG Files Organized/N400")
+
+# Load in all the file names from this directory
+N400.all.files <- list.files()
+
+# Keep only the EEG files
+N400.eeg.files <- N400.all.files[grepl(".eeg",N400.all.files)]
+
+# Split the string and keep the first part
+IDs <- do.call(rbind,str_split(N400.eeg.files,"_"))[,1]
+
+# Convert these IDs into numbers- which will remove test run files
+IDs <- unique(IDs[complete.cases(as.numeric(IDs))])
+
+# Convert them into a dataframe and include the + for ANT data
+N400 <- data.frame(ID = as.numeric(IDs),
+                   N400 = rep("+",length(IDs)))
+```
+
+#### P300
+
+
+```{r load in the IDs for P300, warning = FALSE}
+# Set the working directory for ANT
+setwd("Y:/STUDY 1/All EEG Files Organized/P300")
+
+# Load in all the file names from this directory
+P300.all.files <- list.files()
+
+# Keep only the EEG files
+P300.eeg.files <- P300.all.files[grepl(".eeg",P300.all.files)]
+
+# Split the string and keep the first part
+IDs <- do.call(rbind,str_split(P300.eeg.files,"_"))[,1]
+
+# Convert these IDs into numbers- which will remove test run files
+IDs <- unique(IDs[complete.cases(as.numeric(IDs))])
+
+# Convert them into a dataframe and include the + for ANT data
+P300 <- data.frame(ID = as.numeric(IDs),
+                   P300 = rep("+",length(IDs)))
+```
+
+
+#### RAW
+
+
+```{r load in the IDs for RAW, warning = FALSE}
+# Set the working directory for ANT
+setwd("Y:/STUDY 1/All EEG Files Organized/RAW")
+
+# Load in all the file names from this directory
+RAW.all.files <- list.files()
+
+# Keep only the EEG files
+RAW.eeg.files <- RAW.all.files[grepl(".eeg",RAW.all.files)]
+
+# Split the string and keep the first part
+IDs <- do.call(rbind,str_split(RAW.eeg.files,"_"))[,1]
+
+# Convert these IDs into numbers- which will remove test run files
+IDs <- unique(IDs[complete.cases(as.numeric(IDs))])
+
+# Convert them into a dataframe and include the + for ANT data
+RAW <- data.frame(ID = as.numeric(IDs),
+                  RAW = rep("+",length(IDs)))
+```
+
+
+### Creating a new dataset of available data
+
+We will now create a new Master Excel sheet comprised of all data available for each ID in the Study 1 directory. If data is present it's value or a '+' symbol will be present. If data is not present then an NA will be in that cell. The rows show the ID numbers going from smallest to largest. We are very likely that real ID's have 5 characters, so any ID's with less or more than this are most likely typos. 
+
+```{r creating a new dataset of available data}
+# Create a new dataset from all of the tasks specific data frame using full_join
+data <- Demo %>%
+  full_join(Groups, by = "ID") %>%
+  full_join(ARFA, by = "ID") %>%
+  full_join(ASR, by = "ID") %>%
+  full_join(BRIEF, by = "ID") %>%
+  full_join(CFIT, by = "ID") %>%
+  full_join(WHOQL, by = "ID") %>%
+  full_join(Hand, by = "ID") %>%
+  full_join(Medical, by = "ID") %>%
+  full_join(ANT, by = "ID") %>%
+  full_join(N170, by = "ID") %>%
+  full_join(N400, by = "ID") %>%
+  full_join(P300, by = "ID") %>%
+  full_join(RAW, by = "ID") %>%
+  drop_na(ID) %>%
+  arrange(ID)
+
+# Show the first ten rows
+head(data,10)
+
+```
+
+
+### Save this on the server
+
+```{r set the working directory}
+# Set the saving directory
+setwd("Y:/STUDY 1")
+
+# Save it
+write_xlsx(x = data,
+           path = "MegaGrant_TBL_Database_Newest.xlsx")
+
+```

@@ -1,0 +1,221 @@
+---
+title: "rsEEG Preprocessing"
+author: "Leandro Ledesma"
+date: "2024-02-02"
+output: html_document
+---
+
+### Universal block code settings
+
+```{r universal block code setting}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(message = FALSE)
+knitr::opts_chunk$set(comment = NULL)
+```
+
+### Load in the data manipulation packages first
+
+```{r load in packages, message= FALSE, warning = FALSE}
+library(tidyverse)
+library(ggplot2)
+library(readxl)
+library(gt)
+```
+
+### Load in the data
+
+We will do the same transformation to our excel file to obtain the same 604 ID's. 
+
+```{r load in the data, warning = FALSE}
+# The cleaned master excel file is saved locally on my times computer
+# In my documents > Master's Project
+
+# Set working directory
+setwd("~/Masters Project")
+
+# Load in the data
+masterData <- read_excel("MegaGrant_TBL_.xlsx")
+
+# Select the variables of interest from our masterData
+# Keep only the rows that have no missing data
+finalData <- masterData %>%
+  select(ID, Sex, Age, Group, CFIT, ARFA, RAW) %>%
+  filter(complete.cases(.))
+
+# Check the dimension of our final data
+dim(finalData)
+
+```
+
+
+### Verifying number of rsEEG files
+
+We need to verify how many number of resting-state EEG files are present in our database. According to our previous RMarkdown document (Step 2) and our output from the code above, we should have 604 unique ID's that have the following data: Sex, Age, Group, CFIT, ARFA, and rsEEG. Let's verify if this is the case by comparing how many of our 604 IDs have resting state EEG on the server.
+
+To do this, we will record all of the file names from the rsEEG on the server, extract the ID number from the file names then compare them to NOT to our 604 IDs, but to the transformed **RAW** variable that contains names of files that are identical to the real ID or have a typo name of the rsEEG file that was discovered through fuzzy matching. 
+
+```{r verifying EEG files, warning = FALSE}
+# Set the working directory 
+setwd("Y:/STUDY 1/All EEG Files Organized/RAW")
+
+# Load in all of the file names
+file.names <- list.files()
+
+# Extract only the .eeg files from all of the files
+file.names.eeg <- file.names[grepl(".eeg", file.names)]
+
+# Extract the ID's from the remaining EEG files
+rsEEG.IDs <- as.numeric(gsub(".*?([0-9]+).*", "\\1", file.names.eeg))   
+
+# Get the length of the ID's
+length(rsEEG.IDs)
+
+# Obtain the ID's that match in both vectors
+intersect.IDs <- intersect(rsEEG.IDs, finalData$RAW)
+
+# Let's get the length of the IDs that matched
+length(intersect.IDs)
+
+```
+We see that the ouput returned from matching the IDs in our master excel sheet and from all the rsEEG file names matched. Thus we can continue since there are no discrepancies. 
+
+### Brief preprocessing scripts overview
+
+The original resting-state EEG (rsEEG) data contained both eyes open and eyes closed conditions. These conditions were fortunately marked in the data, however, there were files that had these markers missing, leading them to be excluded from the analysis. rsEEG data with the correct markers (eyes open) were then preprocessed with three scripts in MATLAB that used EEGLAB plugin functions. Here is a brief description of what each script did.
+
+1) Separated eyes-open and eyes-closed rsEEG segments from the original recordings.
+
+2) Added channels, filtered data 0.5 - 45 Hz, resampled to 500 Hz, identified bad channels using the 'pop_clean_rawdata' function and interpolated them using a spherical method, removed EEG data that had more than 75 microVolts or less than -75 microVolts, and re-referenced to the whole head.
+
+3) Ran ICA with PCA
+
+4) Used MARA to remove additional artifacts
+
+### Files excluded along the way
+
+As mentioned, not all rsEEG files made it to the end of the preprocessing pipeline, either because markers were missing or the data was too noisy that those files were exluded. Additionally, we are interested in how many files made it to the end of the preprocessing script that also have data for our predictors and variables we are trying to control.
+
+Thus, now we will go to each folder that contains the output of all the scripts and determine how many of our 604 ID's made it to the end.
+
+```{r warning = FALSE}
+# Create a vector with the names of all the pathways for each preprocessed EEG data
+working.directories <- c("Y:/STUDY 1/All EEG Files Organized/Preprocessed_RAW/RAW_eyes_open_and_eyes_closed",
+                         "Y:/STUDY 1/All EEG Files Organized/Preprocessed_RAW/RAW_eyes_open_and_eyes_closed_before_ICA",
+                         "Y:/STUDY 1/All EEG Files Organized/Preprocessed_RAW/RAW_eyes_open_and_eyes_closed_after_ICA",
+                         "Y:/STUDY 1/All EEG Files Organized/Preprocessed_RAW/RAW_eyes_open_and_eyes_closed_after_component_rejection")
+
+# Create a vector with the name for our list
+list.names <- c("Remaining rsEEG: Contained Eyes Open Marker",
+                "Remaining rsEEG: Survived Main Preprocessing",
+                "Remaining rsEEG: No problems with ICA",
+                "Remaining rsEEG: No problems with MARA")
+
+# Create a list to keep the output from our for loop
+remaining.rsEEG <- list()
+
+# Create a for loop that will check how many files made it through each preprocessing stage
+# We are only interested in the ID's that match our 604 sample
+for(ii in 1:length(working.directories)) {
+  
+  # set working directory
+  setwd(working.directories[ii])
+  
+  # Obtain all of the file names
+  all.files <- list.files()
+  
+  # extract only the eyes open files
+  eyes.open.files <- all.files[grepl("EyesOpen",all.files)]
+  
+  # extract the IDs from the file names
+  rsEEG.IDs <- as.numeric(gsub(".*?([0-9]+).*", "\\1", eyes.open.files))   
+
+  # Intersect with our 604 IDs of interest
+  remaining.IDs <- intersect(rsEEG.IDs, finalData$RAW)
+
+  # Save the  intersected ID's into a list
+  remaining.rsEEG[[ii]] <- remaining.IDs
+  
+  # Name our list by iteration
+  names(remaining.rsEEG)[ii] <- list.names[ii]
+}
+
+# Print out the number of remaining ID's for each list
+remaining.rsEEG %>%
+  lapply(., function(x) length(x))
+
+```
+
+From our output, we see that we lost a majority of ID's after the first preprocessing step 604 - 521 = 83 because they had no eyes-open marker. Additionally, 2 files did not make it passed the main preprocessing script (script 2) and as expected, there were no issues with the following two scripts. Thus, our final usable rsEEG recordings are 519.
+
+### Investigating segmentation length
+
+We do not want to keep files that had too much data removed from them during the preprocessing pipeline. Specifically, this refers to segmentation rejection, where segments of data that are too noisy are deleted. We will use a threshold of 80% rsEEG data remaining for our inclusion- any file will less will be removed.
+
+Along with our saved rsEEG files for each preprocessing script, excel sheets were also created that gives us information about the data after its manipulate. We will now investigate the excel sheets containg the length of rsEEG data remaining after segmentation rejection.
+
+```{r investigating segment length, warning = FALSE}
+# Set working directory 
+setwd("Y:/STUDY 1/All EEG Files Organized/Preprocessed_RAW/RAW_eyes_open_and_eyes_closed_before_ICA")
+
+# Load in all of the file names
+file.names <- list.files()
+
+# Extract only the .eeg files from all of the files
+file.names.csv <- file.names[grepl(".csv", file.names)]
+
+# Create a list to save the read in csv files
+list.csv <- list()
+
+# Create a loop to read in each CSV file
+for(ii in 1:length(file.names.csv)) {
+
+  # load in data and save it into an object
+  current.csv <- read.csv(file.names.csv[[ii]])
+  
+  # Create a new variable with the ID number alone
+  current.csv <- current.csv %>%
+    mutate(IDs = as.numeric(gsub(".*?([0-9]+).*", "\\1", SubjectID)))
+  
+  # Save the transformed dataset into the list
+  list.csv[[ii]] <- current.csv
+  
+}
+
+# Combined all csv's into one
+all.csv <- list.csv %>%
+  do.call(rbind,.) %>%
+  data.frame()
+
+# Obtain the median rsEEG recording
+rsEEG.length.median <- median(all.csv$StartingMin)
+
+# Create the threshold cut off
+cut.off <- .8 * rsEEG.length.median
+
+# Create a variable indicating if the rsEEG made the cut off or not
+all.csv <- all.csv %>%
+  mutate(Threshold = ifelse(RemainingMin > cut.off, "Eligible", "Excluded"))
+eligible.csv <- all.csv %>% filter(Threshold == "Eligible")
+
+# Intersect the ID's that have enough rsEEG data with those ID's that survived the preprocessing steps from above
+rsEEG.intersect <- intersect(eligible.csv$IDs, remaining.rsEEG[[4]])
+
+# Remaining subjects
+length(rsEEG.intersect)
+
+```
+
+After checking the lengths of each recording, 466 rsEEG files made the cut. This will be our final sample size for rsEEG. 
+
+### Saving files
+
+We will be saving these files as a CSV for later usage
+
+```{r save the data}
+# Set the saving directory
+setwd("C:/Users/lledesma.TIMES/Documents/Masters Project")
+
+# Save the 466 IDs that intersected
+write_csv(data.frame(IDs = rsEEG.intersect), file = "Preprocessed.rsEEG.csv")
+
+```

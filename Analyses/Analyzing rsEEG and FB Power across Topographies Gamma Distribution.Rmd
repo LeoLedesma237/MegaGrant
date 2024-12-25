@@ -1,0 +1,421 @@
+---
+title: "Analyzing resting-state EEG and Spelling Performance in Young Adults (Gamma)"
+author: "Leandro Ledesma"
+date: "2024-12-24"
+output: html_document
+---
+
+### Universal block code settings
+
+```{r setup}
+knitr::opts_chunk$set(echo = FALSE)
+knitr::opts_chunk$set(message = FALSE)
+knitr::opts_chunk$set(comment = NULL)
+knitr::opts_chunk$set(warning = FALSE)
+
+```
+
+### Load in the data manipulation packages first
+
+```{r loading in the packages, warning = FALSE}
+library(tidyverse)
+library(ggplot2)
+library(readxl)
+library(kableExtra)
+library(broom) # Converts regression outputs into dataframes using the tidy() function
+library(psych)
+library(MASS, exclude = "select") # This package is loaded with QuantPsyc, must exclude "select" or you wont be able to use it. 
+library(QuantPsyc) # Can use the lm.beta function to calculate the standardized betas
+library(car) # To calculate VIF
+library(performance) # ICC 
+library(lme4) #glmer
+library(interactions) # interact_plot
+```
+
+### Load in our data
+
+```{r load in predictor variable, warning= FALSE}
+# Set the working directory
+setwd('C:/Users/lledesma.TIMES/Documents/MegaGrant/Processed')
+
+# Load in the ARFA performance measures
+ARFA <- read.csv("BehavioralData/ARFA.Spelling.Errors.Scored.csv")
+
+# Add Spelling ERror Variable
+ARFA <- select(ARFA, ID, Total_SpellingError)
+
+# Load in the rsEEG datasets
+eyes.closed <- read_excel("EEGData/EEG Eyes Open and Closed FB Power (Whitford, 2007).xlsx", sheet = "eyes.closed")
+eyes.open <-  read_excel("EEGData/EEG Eyes Open and Closed FB Power (Whitford, 2007).xlsx", sheet = "eyes.open")
+
+# load in demographic information
+demo <- read_excel("MegaGrant_TBL.xlsx")
+
+# data cleaning
+demo <- demo %>%
+  select(ID, 
+         Sex, 
+         Age, 
+         Group) %>%
+  mutate(ID = as.numeric(ID),
+         Age = as.numeric(Age)) 
+
+
+# Load in the CFIT data
+CFIT <- read.csv("BehavioralData/CFIT.scores.csv")
+
+# Data cleaning
+CFIT <- select(CFIT, ID, Raw.Scores)
+
+
+### Combine the dataset into one
+data <- demo %>%
+  full_join(CFIT, by = "ID") %>%
+  full_join(ARFA, by = "ID") %>%
+  full_join(eyes.closed, by = "ID")
+```
+
+
+### Index subjects by those that met the requirements
+
+- No self-report injury
+- No Epilepsy
+- Removing missing data
+- No one below 'IQ' of 70 (more than 2 SD below the mean)
+- Extremely poor spellers (more than 3 SD below the mean)
+- Issues with EEG recordings
+- Did not survive EEG cleaning
+
+
+```{r keep non rejects subjects}
+# Set the working directory
+setwd('C:/Users/lledesma.TIMES/Documents/MegaGrant/Processed')
+
+# Load in the final sample data
+Final_Sample_Size <- read_excel("Final.Sample.Size.xlsx")
+
+# Index the data by the IDs in the final sample size
+data2 <- data %>%
+  filter(ID %in% Final_Sample_Size$ID)
+
+```
+
+
+### Missing data
+
+- All data should be present based on the index from the previous section
+
+```{r reporting missing data part 1,  results= 'asis', echo = FALSE}
+cat("This is an automated response: The current dataset has the dimensions",paste(dim(data2), collapse = " x "),". Below is a frequency table showing the number of missing data for each variable.")
+
+# Create a dataframe of missing data
+Missing.data.df <- cbind(colSums(is.na(data2))) %>%
+  data.frame(Missing.Num = .)
+
+# Add More variables of interest
+Missing.data.df$Remaining.Num = nrow(data) - Missing.data.df$Missing.Num
+Missing.data.df$Remaning.Per = round(Missing.data.df$Remaining.Num/nrow(data),3)*100
+
+# Add a variable indicating which type of data is missing
+Missing.data.df$data <- row.names(Missing.data.df)
+
+# Remove row names to reduce redundancy
+row.names(Missing.data.df) <- NULL
+
+# Print the table
+Missing.data.df %>%
+  select(data, Missing.Num, everything()) %>%
+  arrange(Missing.Num) %>% 
+  kbl() %>%  
+  kable_paper(full_width = F)
+```
+
+
+```{r reporting missing data part 2,  results= 'asis', echo = FALSE}
+cat("This is an automated response: Our final sample size is n=",length(unique(data2$ID)))
+
+```
+
+## Research Question
+- We are interested in investigating spelling performance as a predictor of EEG activity. We hypothesize that spelling ability will result in differences in brain activity while controlling for covariates like Age, Group (Bio vs Ins), and topography. 
+
+
+
+## Descriptive statistics of the data
+
+We can use the describe() function from the psych package to give us descriptive statistics from the variables that will be incorporated into the model. We will create 3 tables. The first will contain information about the continuous predictors. The next will have the frequency of the categorical variables. Lastly we will have a table for the resting-state EEG frequency bands. 
+
+We will be creating models for 4 differenet frequency bands (delta, theta, alpha, beta), thus, four datasets will be created where only information related to a specific frequency band are present.
+
+### Descriptives of our data
+
+```{r descriptive statistics of continuous predictors}
+data2_cont <- data2 %>% select(Age, Raw.Scores, Total_SpellingError, frontal_delta:occipital_beta)
+describe(data2_cont)
+
+# Categorical information
+table(data2$Sex)
+table(data2$Group)
+```
+
+
+### Visualizing all continuous variables as histograms (Z-scores)
+
+- This drives home the message that the outcome variable is highly skewed to the right in all possible combinations of FB and Topography.
+
+```{r visualize all variables as histograms, out.width= "33%"}
+# Plot the histograms of all continuous variables
+histograms.list <- list()
+
+for(ii in 1:length(data2_cont)) {
+
+  # Save the current var into an object
+  current_var <- unlist(data2_cont[,ii])
+  
+  # Convert it into a z-score
+  current_var_z <- scale(current_var)
+
+  # Plot it
+  current_plot <- current_var_z %>%
+    data.frame(x=.) %>%
+      ggplot(aes (x = x)) +
+      geom_histogram(fill = "white",
+                     color = "black",
+                     bins = 20) +
+      labs(title = paste0(names(data2_cont[,ii]),"_z")) +
+      theme(plot.title = element_text(size = 14, hjust = 0.5)) +
+    theme_classic()
+
+  # Print out the plot
+  plot(current_plot)
+}
+
+```
+
+
+### Testing for Multicollinearity
+
+- We need to drop predictors that are highly correlated with each other
+- Raw scores and total spelling error is kinda high but I think okay
+
+```{r run a correlation matrix}
+cor(select(data2_cont, Age, Raw.Scores, Total_SpellingError))
+
+```
+
+
+### Check for independence between categorical variables
+
+P-value is significant. It seems there are more females who were raised in biological families than males. This may not be as big of a deal as initially thought.  
+
+```{r run a chi square test}
+# Create a contingency table
+contingency.table <- table(select(data2, Sex, Group ))
+
+# Show the table with margins
+addmargins(contingency.table)
+
+# Obtain the proportions for each cell
+round(prop.table(contingency.table),3)
+
+# Run chi-square test
+chisq.test(contingency.table)
+```
+### Preparing Data for Modeling
+
+We see here that the z-score distribution is larger, but that is highly likely to having power from different brain regions all in one vector AND frequency bands. We can confirm this with boxplots.
+
+```{r preparing data for modeling}
+# Converting the data into long format to isolate topography and FB
+data3 <- data2 %>%
+  pivot_longer(cols= c(frontal_delta:occipital_beta),
+               values_to = "Power")
+
+# Separate 'name' into  two variables
+data3$Topography <- sapply(str_split(data3$name, "_"), function(x) x[1])
+data3$FB <- sapply(str_split(data3$name, "_"), function(x) x[2])
+data3 <- select(data3, - name)
+
+# Convert the graph into z_scores
+data3$Power_z <- as.vector(scale(data3$Power))
+
+# Graph the histogram of z-scores
+hist(data3$Power_z)
+
+# Create a box plot to see brain activity across regions
+data3 %>%
+  ggplot(aes(x = FB ,y= Power, color = Topography)) +
+  geom_boxplot() +
+  theme_classic()
+
+# IDs with high alpha power in the posterior
+alpha_post <-data3[data3$FB == "alpha" & data3$Topography == "occipital",]
+
+# IDs with higher than 3 SD from the mean
+high_alpha_post <- alpha_post[alpha_post$Power_z >=3 | alpha_post$Power_z <= -3,]
+norm_alpha_post <- alpha_post[alpha_post$Power_z < 3 & alpha_post$Power_z >  -3,]
+
+# Print the top 20 IDs with high alpha power descending
+high_alpha_post %>%
+  arrange(desc(Power_z)) %>%
+  head(20)
+
+# Pick the first 20 IDs with normal alpha power in occipital
+norm_alpha_post %>%
+  head(20)
+```
+
+
+### Removing Outliers
+
+In the boxplot above, We can see what what is driving the difference in the data is alpha power in the occipital region since it is much larger than in other FB x regions. A potential solution to removing outliers in the data might be to remove any data points within a topography x FB that is more than 3 SD from their mean. We can do that I believe by grouping the data and then scaling the power using the mutate() function.
+
+We can confirm this worked by comparing the z score differences between the two variables
+
+We will then remove the values that are 3 SD from the means of their respective groups- since we will be using mixed effects models, we do not have to drop the ID entirely if they are missing data since the model can handle it. 
+
+```{r removing outlier within frequency band and topography}
+# Create z-scores by group and FB combinations
+data4 <- data3 %>%
+  group_by(FB, Topography) %>%
+  mutate(Power_within_z = scale(Power))
+
+# Remove data that is more than 3 SD from their respective group x FB combination
+data4 <- data4 %>%
+  filter(Power_within_z < 3)
+
+# Check the number of subjects remaining in the data
+length(unique(data4$ID))
+paste0("Removed ", nrow(data3) - nrow(data4), " observations from the dataset")
+
+# plot the boxplot again
+data4 %>%
+  ggplot(aes(x = FB ,y= Power, color = Topography)) +
+  geom_boxplot() +
+  theme_classic()
+```
+
+
+
+### Running our models
+
+As mentioned, we are interested in how spelling performance may potentially influence electrical brain activity. To do this, we will be creating a **generalized linear mixed effects model (GLMM)** with a gamma distribution and **log** link function. This is because the distribution of the outcome power (which is a value representing averaged amplitudes within a frequency range/band) is positive and skewed to the right, which will produced skewed errors. A Gamma distribution can better fit our data. Additionally, the introduction of topographical regions as a factor requires subjects to have their own random intercept. This is because we may expect brain regions to be more similar to each other within a person than across- thus, this needs to be taken into account by introducing subjects as a random effect. 
+
+The log link part is important and different from a logit link. The similarity is that exp() is used to represent these values into a number that is easier to understand. For the 'log' link, exp() converts it into a **raw score**- so in a way, it seems that exp() estimates is like turned them back into regular estimates that can be interpreted linearly (as one unit increase we expect this increase for the outcome) instead of as a probability. This is information obtain from ChatGPT.
+
+
+We will use model comparison to see which model would be the best to interpret- however, if the model of best fit is too difficulty/complex, then we may chose the second best model.
+
+Model 0: Empty model with power as the outcome
+Model 1: A model with the covariates: They will also go through model comparison to pick the best coviarate model
+Model 2: A model with the chosen covariates and Topography
+Model 3: A model with the chosen covariates, Topography, and the predictor of interest (Spelling Error)
+Model 4: Complex model with interactions (Spelling Error x Age)
+Model 5: Complex model with interactions (Spelling Error x Topography)
+Model 6: A very complex model with interactions (Spelling Error x Topography X Age)
+
+Model 6 is the best fit, however, its main effects indicated that the complex interactions were not significant- thus, right now we will be further exploring model 4 and model 5 since both were better than model 3 and had interaction effects.
+
+
+```{r running the analyses, out.width  = "49%"}
+# Creating the models
+mod0 <- glmer(Power ~ 1 + (1|ID), data = data4, 
+            family = Gamma(link = "log")) 
+
+# Print the icc
+icc(mod0)
+
+mod1 <- glm(Power ~ Age + (1|ID), data = data4, 
+            family = Gamma(link = "log")) # Age was the only significant predictor (not IQ, group, Sex)
+
+mod2 <- glm(Power ~ Age + Topography + (1|ID), data = data4, 
+            family = Gamma(link = "log"))
+
+mod3 <- glm(Power ~ Age + Topography + Total_SpellingError + (1|ID), data = data4, 
+            family = Gamma(link = "log"))
+
+mod4 <- glm(Power ~ Age + Topography * Total_SpellingError + (1|ID), data = data4, 
+            family = Gamma(link = "log"))
+
+mod5 <- glm(Power ~ Age * Total_SpellingError + Topography  + (1|ID), data = data4, 
+            family = Gamma(link = "log"))
+
+mod6 <- glm(Power ~ Age * Topography * Total_SpellingError + (1|ID), data = data4, 
+            family = Gamma(link = "log"))
+
+
+# Creating the Guassian counterpart to compare distribution of the errors
+mod4_guassian <- glm(Power ~ Age + Topography * Total_SpellingError + (1|ID), data = data4, 
+            family = gaussian(link = "identity"))
+
+mod5_guassian <- glm(Power ~ Age * Total_SpellingError + Topography  + (1|ID), data = data4, 
+            family = gaussian(link = "identity"))
+
+
+# model comparison results
+anova(mod0, mod1, mod2, mod3, mod4, mod6, test = "Chisq")
+anova(mod0, mod1, mod2, mod3, mod5, mod6, test = "Chisq")
+
+# Plotting the residuals
+qqnorm(resid(mod4))
+qqline(resid(mod4))
+qqnorm(resid(mod5))
+qqline(resid(mod5))
+qqnorm(resid(mod4_guassian))
+qqline(resid(mod4_guassian))
+qqnorm(resid(mod5_guassian))
+qqline(resid(mod5_guassian))
+```
+
+
+## Identifying and removing outliers
+
+While the Gamma Log Link functions models look better at handling the EEG data than guassian, we still see that there can be some improvement. Thus, we will now check using cook's distance if there are any outliers in the data, and if so to remove them. 
+
+We will be doing this for both mod4 and mod5
+
+```{r identifying outliers using cooks distance, out.width = "49%"}
+# Remove outliers using cook's distance 
+N = length(unique(data4$ID))
+k = length(coef(mod4)) - 1 # 8 unique predictors
+
+# Calculate cooks distance
+cooks_mod4 <- cooks.distance(mod4)
+
+# Identify influential cases 4/(N-k-1)
+influential_mod4 <- which(cooks_mod4 > (4 / (N - k - 1))) 
+
+# Remove the influential cases from the data
+data4_1 <- data4[-influential_mod4, ]
+
+
+### Repeate for model 5
+# Remove outliers using cook's distance 
+N = length(unique(data4$ID))
+k = length(coef(mod5)) - 1 # 8 unique predictors
+
+# Calculate cooks distance
+cooks_mod5 <- cooks.distance(mod5)
+
+# Identify influential cases 4/(N-k-1)
+influential_mod5 <- which(cooks_mod5 > (4 / (N - k - 1))) 
+
+# Remove the influential cases from the data
+data4_2 <- data4[-influential_mod5, ]
+
+
+## Rerun the models
+mod4_2 <- glm(Power ~ Age + Topography * Total_SpellingError, data = data4_1, 
+            family = Gamma(link = "log"))
+
+mod5_2 <- glm(Power ~ Age * Total_SpellingError + Topography , data = data4_2, 
+            family = Gamma(link = "log"))
+
+## Check the distribution of the residuals
+qqnorm(resid(mod4_2))
+qqline(resid(mod4_2))
+qqnorm(resid(mod5_2))
+qqline(resid(mod5_2))
+
+```
+

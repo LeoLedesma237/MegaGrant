@@ -1,0 +1,125 @@
+---
+title: "Finding Behavioral Files"
+author: "Leandro Ledesma"
+date: "2024-05-15"
+output: html_document
+---
+
+
+### Universal block code settings
+
+```{r setup}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(message = FALSE)
+knitr::opts_chunk$set(comment = NULL)
+
+```
+
+### Load in packages
+
+```{r load in packages, warning = FALSE}
+library(readxl) # Import excel files
+library(tidyverse) # use tidyverse functions
+library(writexl) # Save dataframe as an excel file
+
+```
+
+### Finding .Log files
+
+EEG recordings saved in the STUDY1 directory should also include behavioral files associated with some of the tasks. These would be labeled as .log files. Originally, these files were not transfered over into the organized directory- thus they remain somewhere in the Archived directory. The following code below will set the working directory to this main Archived location and identify all files that contain .log in the name. 
+
+```{r finding log files in archived}
+# Set the working directory
+setwd("Y:/STUDY 1/Archived")
+
+# Obtain all file names in this massive directory of data
+all.pathways.and.files <- list.files(recursive = TRUE)
+
+# Keep only the files that contain .log in them
+all.pathways.and.log.files <- all.pathways.and.files[grep(pattern = ".log", x =all.pathways.and.files)]
+
+# Find the log files associated with a task
+P300.pathways.and.log.files <- all.pathways.and.log.files[grep(pattern = "P300", x = all.pathways.and.log.files)]
+N170.pathways.and.log.files <- all.pathways.and.log.files[grep(pattern = "N170", x = all.pathways.and.log.files)] 
+N400.pathways.and.log.files <-  all.pathways.and.log.files[grep(pattern = "N400", x = all.pathways.and.log.files)]
+ANT.pathways.and.log.files <- all.pathways.and.log.files[grep(pattern = "ANT", x = all.pathways.and.log.files)]
+```
+
+### Copying the files over part 1: Extracting file names
+
+To move these files over, we need to use the file.copy function that takes in two arguments. The first argument is 'from', which requires the full pathway + the file. This is the file that will get copied. The second argument is 'to', which requires the full pathway + the name of the file. This is where the file will be saved and indicates how it will be named. Four folders were created manually in STUDY1 and this is where these .log files will be saved- depending on the EEG task they are associated with. 
+
+Currently, I have the information for the 'from' argument satisfied. The information for the 'to' argument will be more tricky since I need to manually add the pathway in code to indicate where I want the files to be saved and I also need to name these files. It would be best for these copied over files to share the same name as the original- thus I will need to create a separate code that takes the information that would be used for the 'from' argument and extract the file name from each pathway. We can potentially do this using the stri_split function in conjunction with extracting the last element of each list that gets created. We can extract the last item using the tail function. 
+
+```{r copying the files over}
+# Extract the file name of each of the log files from above.
+# Create a list first to make it easier
+from.log.pathways.and.files.list <- list(P300.pathways.and.log.files,
+                                    N170.pathways.and.log.files,
+                                    N400.pathways.and.log.files,
+                                    ANT.pathways.and.log.files)
+
+# Create a list to save the file names
+log.files.list <- list()
+
+# Extract the file name and save that into the respective list
+for(ii in 1:4) {
+  
+  # Current list element
+  current.list.element <- from.log.pathways.and.files.list[[ii]]
+  
+  # Split the string by the back slash
+  log.files.list[[ii]] <- sapply(str_split(current.list.element, pattern = "/"), tail,1)
+}
+
+```
+
+### Copying the files over part 2: adding respective save pathway to extracted file names
+
+The pathways to the four directories are save below as separate objects. We will now need to join that information with the respective filename to satisfy the 'to' argument in the file.copy function. We can join this information together using the paste function. 
+
+```{r add the correct save pathways to the extracted file names}
+# Create the save directories for each EEG task
+sd.P300 <- 'Y:/STUDY 1/All EEG Log Files Organized/P300'
+sd.N170 <- 'Y:/STUDY 1/All EEG Log Files Organized/N170'
+sd.N400 <- 'Y:/STUDY 1/All EEG Log Files Organized/N400'
+sd.ANT <- 'Y:/STUDY 1/All EEG Log Files Organized/ANT'
+
+# Join these into one vector
+sd.EEG.tasks <- c(sd.P300, sd.N170, sd.N400, sd.ANT)
+
+# Create a list that will have the save pathway and file names to satisfy the 'to' argument.
+to.log.pathways.and.files.list <- list()
+
+# Create a for loop to finalize this
+
+for(ii in 1:4) {
+  
+  # Paste the respective save pathway to all the extracted file names
+  to.log.pathways.and.files.list[[ii]] <- paste(sd.EEG.tasks[[ii]], log.files.list[[ii]],sep="/")
+  
+}
+
+```
+
+
+### Copying the files over
+
+Now that both 'from' and 'to' arguments have been satisfied, we can use the copy.file function to copy and paste files. Doing this will copy all .log files from four different EEG tasks and save them in their respective organized EEG folder.
+
+```{r copying and saving the files}
+# Create a dataframe of the two
+data.to.be.copied.and.pasted <- data.frame(from = do.call(c, from.log.pathways.and.files.list),
+                                          to = do.call(c, to.log.pathways.and.files.list))
+
+# Create a for loop to run each element in the from list and each elemet in the to list
+for(ii in 1:nrow(data.to.be.copied.and.pasted)) {
+  
+  # Run the code
+  file.copy(from = data.to.be.copied.and.pasted$from[[ii]],
+            to = data.to.be.copied.and.pasted$to[[ii]])
+  
+}
+
+
+```

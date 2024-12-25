@@ -1,0 +1,1355 @@
+---
+title: "Analyzing resting-state EEG and Spelling Performance in Young Adults"
+author: "Leandro Ledesma"
+date: "2024-03-13"
+output: html_document
+---
+
+### Universal block code settings
+
+```{r setup}
+knitr::opts_chunk$set(echo = FALSE)
+knitr::opts_chunk$set(message = FALSE)
+knitr::opts_chunk$set(comment = NULL)
+knitr::opts_chunk$set(warning = FALSE)
+
+```
+
+### Load in the data manipulation packages first
+
+```{r loading in the packages, warning = FALSE}
+library(tidyverse)
+library(ggplot2)
+library(ggpubr)
+library(readxl)
+library(kableExtra)
+library(stringdist)
+library(broom) # Converts regression outputs into dataframes using the tidy() function
+library(psych)
+library(corrtable) # Potential correlation matrix code
+library(quantreg) # rq (quantile regreeion)
+library(MASS, exclude = "select") # This package is loaded with QuantPsyc, must exclude "select" or you wont be able to use it. 
+library(QuantPsyc) # Can use the lm.beta function to calculate the standardized betas
+library(car) # To calculate VIF
+library(purrr) # Allows for the usage of the map function
+```
+
+### Load in our predictor variable
+
+```{r load in predictor variable, warning= FALSE}
+# Set the working directory
+setwd("~/Masters Project/cleaned_predictor_covariates")
+
+# Load in the ARFA performance measures
+ARFA <- read.csv("ARFA.Spelling.Errors.Scored.csv")
+
+# Add Spelling ERror Variable
+ARFA <- select(ARFA, ID, Total_SpellingError)
+
+```
+
+
+### Load in our dependent variable
+
+
+```{r load in dependent variable, warning = FALSE}
+# Set the working directory
+setwd("~/Masters Project/cleaned_dependent_variable")
+
+# Load in the rsEEG datasets
+eyes.closed <- read_excel("EEG Eyes Open and Closed FB Power (Whitford, 2007).xlsx", sheet = "eyes.closed")
+eyes.open <-  read_excel("EEG Eyes Open and Closed FB Power (Whitford, 2007).xlsx", sheet = "eyes.open")
+
+# Data cleaning
+eyes.closed <- eyes.closed %>%
+  filter(Topography != "other")
+
+eyes.open <- eyes.open %>%
+  filter(Topography != "other")
+```
+
+
+### Load in our covariates
+
+```{r loading in covariates, warning = FALSE}
+# Set working directory for demographic and group data
+setwd("~/Masters Project")
+
+# load in demographic information
+demo <- read_excel("MegaGrant_TBL_.xlsx")
+
+# data cleaning
+demo <- demo %>%
+  select(ID, 
+         Sex, 
+         Age, 
+         Group) %>%
+  mutate(ID = as.numeric(ID),
+         Age = as.numeric(Age)) 
+
+# Set working directory for CFIT data
+setwd("~/Masters Project/cleaned_predictor_covariates")
+
+# Load in the CFIT data
+CFIT <- read.csv("CFIT.scores.csv")
+
+# Data cleaning
+CFIT <- select(CFIT, ID, Raw.Scores)
+```
+
+### Combine the dataset into one
+
+
+```{r combine the datasets 1, out.width= "90%"}
+# Combine the the datasets by using the left_join function
+data <- demo %>%
+  full_join(CFIT, by = "ID") %>%
+  full_join(ARFA, by = "ID") %>%
+  full_join(eyes.closed, by = "ID")
+  
+```
+
+
+### Index subjects by those that met the requirements
+
+- No self-report injury
+- No Epilepsy
+- Removing missing data
+- No one below 'IQ' of 70 (more than 2 SD below the mean)
+- Extremely poor spellers (more than 3 SD below the mean)
+- Issues with EEG recordings
+- Did not survive EEG cleaning
+
+
+```{r keep non rejects subjects}
+# Set the working directory
+setwd("~/Masters Project")
+
+# Load in the final sample data
+Final_Sample_Size <- read_excel("Final.Sample.Size.xlsx")
+
+# Index the data by the IDs in the final sample size
+data2 <- data %>%
+  filter(ID %in% Final_Sample_Size$ID)
+
+```
+
+
+
+
+### Missing data
+
+- All data should be present based on the index from the previous section
+
+```{r reporting missing data part 1,  results= 'asis', echo = FALSE}
+cat("This is an automated response: The current dataset has the dimensions",paste(dim(data2), collapse = " x "),". Below is a frequency table showing the number of missing data for each variable.")
+
+# Create a dataframe of missing data
+Missing.data.df <- cbind(colSums(is.na(data2))) %>%
+  data.frame(Missing.Num = .)
+
+# Add More variables of interest
+Missing.data.df$Remaining.Num = nrow(data) - Missing.data.df$Missing.Num
+Missing.data.df$Remaning.Per = round(Missing.data.df$Remaining.Num/nrow(data),3)*100
+
+# Add a variable indicating which type of data is missing
+Missing.data.df$data <- row.names(Missing.data.df)
+
+# Remove row names to reduce redundancy
+row.names(Missing.data.df) <- NULL
+
+# Print the table
+Missing.data.df %>%
+  select(data, Missing.Num, everything()) %>%
+  arrange(Missing.Num) %>% 
+  kbl() %>%  
+  kable_paper(full_width = F)
+```
+
+
+```{r reporting missing data part 2,  results= 'asis', echo = FALSE}
+cat("This is an automated response: Our final sample size is n=",length(unique(data2$ID)))
+
+```
+
+## Descriptive statistics of the data
+
+We can use the describe() function from the psych package to give us descriptive statistics from the variables that will be incorporated into the model. We will create 3 tables. The first will contain information about the continuous predictors. The next will have the frequency of the categorical variables. Lastly we will have a table for the resting-state EEG frequency bands. 
+
+### Continuous predictors
+
+```{r descriptive statistics of continuous predictors}
+# Select the continuous variables (filter by one topographical location)
+continuous.predictors <- data2 %>%
+  filter(Topography == "frontal") %>%
+  select(Total_SpellingError,
+         Age,
+         Raw.Scores) 
+
+
+continuous.predictors.descriptives <- continuous.predictors %>%
+  describe() %>%
+  round(.,2)
+
+
+# Remove row.names
+row.names(continuous.predictors.descriptives) <- NULL
+
+# Change the variable names to make it look nices
+continuous.predictors.descriptives$vars <- c("Spelling Error",
+                                "Age",
+                                "CFIT Raw Scores")
+
+# Print out the most important information
+continuous.predictors.table <- continuous.predictors.descriptives %>%
+  data.frame() %>%
+  select(` ` = vars, 
+         Mean = mean, 
+         Median = median, 
+         SD = sd, 
+         Min = min, 
+         Max = max, 
+         Range = range, 
+         n) %>%
+  kbl(caption = "Table 1: Descriptive Statistics of Continuous Predictors",
+      align = "lccc") %>%
+  kable_classic_2(
+                  full_width = FALSE,
+                  html_font = "Times New Roman") %>%
+  row_spec(0,bold=TRUE)
+
+# Print the table
+continuous.predictors.table
+
+```
+
+
+### Categorical predictors
+
+
+```{r descriptive statistics of categorical predictors}
+# Describe the Frequency and Percentage of one level of your categorical variables (filter by one topographical location)
+categorical.predictors <- data2 %>%
+  filter(Topography == "frontal") %>%
+  select(Sex,
+         Group)
+
+sex.table <- data.frame(rbind(table(categorical.predictors$Sex)))
+group.table <- data.frame(rbind(table(categorical.predictors$Group)))
+
+# Obtain the single value of n from the sum of frequencies in each categorical variable
+n <- nrow(categorical.predictors)
+
+# Identify the proportion of one group characterisitc
+sex.table$M.per <- round(sex.table$M /n,2)*100 
+group.table$B.per <- round(group.table$BF /n,2)*100
+
+
+# Cbind everything into one table
+final.categorical.predictors <- cbind(sex.table, group.table, n)
+
+# Rename the table (careful when renaming!)
+names(final.categorical.predictors) <- c("Female",
+                                         "Male",
+                                         "Male (%)",
+                                         "Bio F.",
+                                         "Insti.",
+                                         "Bio F. (%)",
+                                         "N")
+
+# print out the categorical contingency table
+final.categorical.predictors %>%
+                kbl(caption = "Table 2: Descriptive Statistics of Categorical Variables.",
+                    align = "ccccccc") %>%
+                kable_classic_2(
+                                full_width = FALSE,
+                                html_font = "Times New Roman") %>%
+                row_spec(0,bold=TRUE) 
+
+# Create a table for a cross tabulation
+combined.table <- table(categorical.predictors$Group, categorical.predictors$Sex)
+
+# Add the margins
+final.combined.table <- data.frame(cbind(addmargins(combined.table)))
+
+# Change the variable names (careful when renaming!)
+names(final.combined.table) <- c("Female",
+                                 "Male",
+                                 "Total")
+
+# Change the row names (careful when renaming!)
+row.names(final.combined.table) <- c("Bio F.",
+                                     "Insti.",
+                                     "Total")
+
+final.combined.table %>%
+                kbl(caption = "Table 2: Descriptive Statistics of Categorical Variables.",
+                    align = "ccc") %>%
+                kable_classic_2(
+                                full_width = FALSE,
+                                html_font = "Times New Roman") %>%
+                row_spec(0,bold=TRUE) 
+```
+
+### Descriptive statistics of the EEG data
+
+- Right now this is for eyes-closed only
+
+```{r descriptive statistics of power spectrum}
+# Select the rsEEG variables
+frequency.bands <- data2 %>%
+  select(Topography,
+         Delta,
+         Theta, 
+         Alpha,
+         Beta) 
+
+
+# Create a for loop to get the descriptives for each topographical location
+topography <- c("frontal", "temporal", "parietal", "occipital")
+
+fb.descriptives.topography <- list()
+
+for(ii in 1:length(topography)) {
+
+frequency.bands.descriptives <- frequency.bands%>%
+  filter(Topography == topography[ii]) %>%
+  select(-Topography) %>%
+  describe() %>%
+  round(.,2) %>%
+  data.frame()
+
+# Change the variable names to make it look nicer
+frequency.bands.descriptives$vars <- c("Delta (0.5-3.75Hz)",
+                                       "Theta (4-7.75Hz)",
+                                       "Alpha (8-12Hz)",
+                                       "Beta (12-30Hz)")
+
+# Remove row.names
+row.names(frequency.bands.descriptives) <- NULL
+
+# Save descriptives into a list
+fb.descriptives.topography[[ii]] <- frequency.bands.descriptives
+
+}
+
+# Print out the most important information
+fb.descriptives.topography[[1]] %>%
+  data.frame() %>%
+  select(`Frequency Band` = vars, 
+         Mean = mean, 
+         Median = median, 
+         SD = sd, 
+         Min = min, 
+         Max = max, 
+         Range = range, 
+         n) %>%
+  kbl(caption = "Table 3: Descriptive Statistics of Power from each Frequency Band (Frontal)",
+      align = "lccc") %>%
+  kable_classic_2(full_width = FALSE,
+                  html_font = "Times New Roman") %>%
+  row_spec(0,bold=TRUE)
+
+
+fb.descriptives.topography[[2]] %>%
+  data.frame() %>%
+  select(`Frequency Band` = vars, 
+         Mean = mean, 
+         Median = median, 
+         SD = sd, 
+         Min = min, 
+         Max = max, 
+         Range = range, 
+         n) %>%
+  kbl(caption = "Table 3: Descriptive Statistics of Power from each Frequency Band (Temporal)",
+      align = "lccc") %>%
+  kable_classic_2(full_width = FALSE,
+                  html_font = "Times New Roman") %>%
+  row_spec(0,bold=TRUE)
+
+fb.descriptives.topography[[3]] %>%
+  data.frame() %>%
+  select(`Frequency Band` = vars, 
+         Mean = mean, 
+         Median = median, 
+         SD = sd, 
+         Min = min, 
+         Max = max, 
+         Range = range, 
+         n) %>%
+  kbl(caption = "Table 3: Descriptive Statistics of Power from each Frequency Band (Parietal)",
+      align = "lccc") %>%
+  kable_classic_2(full_width = FALSE,
+                  html_font = "Times New Roman") %>%
+  row_spec(0,bold=TRUE)
+
+fb.descriptives.topography[[4]] %>%
+  data.frame() %>%
+  select(`Frequency Band` = vars, 
+         Mean = mean, 
+         Median = median, 
+         SD = sd, 
+         Min = min, 
+         Max = max, 
+         Range = range, 
+         n) %>%
+  kbl(caption = "Table 3: Descriptive Statistics of Power from each Frequency Band (Occipital)",
+      align = "lccc") %>%
+  kable_classic_2(full_width = FALSE,
+                  html_font = "Times New Roman") %>%
+  row_spec(0,bold=TRUE)
+```
+
+
+### Visualizing all continuous variables as histograms
+
+```{r visualize all variables as histograms, out.width= "90%"}
+# Plot the histograms of all continuous variables
+continous.predictors.outcome <- select(cbind(continuous.predictors, frequency.bands), -Topography) 
+
+# Plot them all as separate histograms
+histograms.list <- list()
+
+for(ii in 1:length(continous.predictors.outcome)) {
+
+continous.predictors.outcome$x <- continous.predictors.outcome[,ii]
+  
+histograms.list[[ii]] <- continous.predictors.outcome %>%
+    ggplot(aes (x = x)) +
+    geom_histogram(fill = "white",
+                   color = "black",
+                   bins = 20) +
+    labs(title = paste(names(continous.predictors.outcome[ii]))) +
+    theme(plot.title = element_text(size = 14, hjust = 0.5)) +
+  theme_classic()
+
+}
+
+ggarrange(histograms.list[[1]], histograms.list[[2]], histograms.list[[3]],
+          histograms.list[[4]], histograms.list[[5]], histograms.list[[6]],
+          histograms.list[[7]])
+
+
+```
+
+- The Frequency Bands (Outcome Measures) do not look parametric. However, we will continue to use parametric tests and identify if the errors look normally distributed. 
+
+
+### Run a correlation matrix for each frequency band
+
+```{r run a correlation matrix}
+correlation.matrix.list <- list()
+
+for(ii in 1:4) {
+
+current.variables <- cbind(select(frequency.bands, -Topography)[ii],continuous.predictors)
+
+# Create a correlation matrix
+correlation.matrix.df <- correlation_matrix(current.variables) %>%
+  data.frame()
+
+# Reintroduce names to the correlation matrix dataframe
+names(correlation.matrix.df) <- names(current.variables)
+
+# Print our APA correlation matrix
+correlation.matrix.list[[ii]] <- correlation.matrix.df %>%
+  kbl(caption = paste("Correlation matrix of our continuous predictors and",names(frequency.bands[ii]))) %>%
+  kable_classic(full_width = F, html_font = "Cambria") %>%
+  footnote(general = c("*** indicates p <.001", "** indicates p <.01 ","* indicates p <.05 "))
+
+}
+
+correlation.matrix.list[[1]]
+correlation.matrix.list[[2]]
+correlation.matrix.list[[3]]
+correlation.matrix.list[[4]]
+
+```
+
+### Visualizing scatterplots
+
+for predictors and frequency bands only
+
+```{r visualizing scatterplots}
+# Create a scatterplot
+scatterplot.list <- list()
+
+# Create a for loop
+for(ii in 1:4) {
+
+scatterplot.list[[ii]]  <- plot(cbind(select(frequency.bands, -Topography)[ii],continuous.predictors))
+
+}
+
+
+```
+
+
+### Check for independence between categorical variables
+
+P-value is significant. It seems there are more females who were raised in biological families than males. This may not be as big of a deal as initially thought.  
+
+```{r run a chi square test}
+# Create a contingency table
+contingency.table <- table(categorical.predictors)
+
+# Show the table with margins
+addmargins(contingency.table)
+
+# Obtain the proportions for each cell
+round(prop.table(contingency.table),3)
+
+# Run chi-square test
+chisq.test(contingency.table)
+```
+
+
+
+### Run a multiple regression predicting the power of each frequency band
+
+```{r running multiple regressions}
+# Change scipen option back to normal
+options(scipen = 0)
+
+# Change our categorical variable into a dummy variable
+data2$Male <- ifelse(data2$Sex == "M", 1, 0)
+data2$IC <- ifelse(data2$Group == "IC", 1, 0)
+
+# Create a list to save all of this information in
+multiple.regression.list <- list()
+
+for(ii in 1:length(select(frequency.bands, -Topography))) {
+
+# Create the model
+model1 <- lm(select(frequency.bands, -Topography)[[ii]] ~ Total_SpellingError + Age + Raw.Scores + Male + IC , data2)
+
+#################################### Part 1: Obtaining the R^2 and more #############################
+
+# Save the model summary into an object
+model.summary <- summary(model1)
+
+# Creating the foot note for the model
+# Create line 1
+line.1 <- paste("Residual standard error:",round(model.summary$sigma,4),", on",model1$df.residual,"degrees of freedom")
+
+# Create line 2
+line.2 <- paste("Multiple R-squared:",round(model.summary$r.squared,4),", Adjusted R-squared: ",round(model.summary$adj.r.squared,5), sep =" ")
+
+# Calculate p value for line 3
+regression.p.value <- pf(model.summary$fstatistic[1], model.summary$fstatistic[2], model.summary$fstatistic[3], lower.tail = FALSE)
+
+# Create line 3
+line.3 <- paste("F-statistic: ",round(model.summary$fstatistic[1],2)," on ",round(model.summary$fstatistic[2],4)," and ",round(model.summary$fstatistic[3],4)," DF,  p-value:", regression.p.value)
+
+
+################################ Part 2: Introduce VIF and more ######################3
+
+
+# Save the models as a dataframe
+model1.df <- broom::tidy(model1)
+
+# Calculate the standardized betas from the model and save them into the model.df
+model1.df$standardized.beta <- c(NA,lm.beta(model1))
+
+# Calculate the tolerance
+model1.df$Tolerance <- c(NA,1/vif(model1))
+
+# Calculate the VIF of the model
+model1.df$VIF <- c(NA,vif(model1))
+
+# Save the model into the list
+multiple.regression.list[[ii]] <- model1.df
+
+}
+
+
+```
+
+### Make the multiple regression look prettier 
+
+```{r make the regular multiple regressions look pretty}
+# Create a list to clean the data for
+cleaned.multiple.regression.list <- list()
+
+for(ii in 1:length(multiple.regression.list)) {
+
+# Round only numeric variables in the dataframe
+model1.df.rounded <- multiple.regression.list[[ii]] %>%
+  mutate(across(where(is.numeric), ~round(.x, 2)))
+
+# Add a function to clean up the p-values
+model1.df.rounded <- model1.df.rounded %>%
+  mutate(p.value = case_when(p.value < .001 ~ paste(format(p.value, nsmall = 2),"***",sep=""),
+                              p.value < .01 ~ paste(format(p.value, nsmall = 2),"**",sep=""),
+                              p.value < .05 ~ paste(format(p.value,nsmall = 2),"*",sep=""),
+                              TRUE ~ paste(p.value)))
+
+# Change the term values
+model1.df.rounded$term <- c("(Intercept)",
+                            "Spelling Error",
+                            "Age",
+                            "Raw CFIT Score",
+                            "Male",
+                            "IC")
+
+# Change the names of the model output
+names(model1.df.rounded) <- c("Model", 
+                              "Beta",
+                              "Std. Error",
+                              "t",
+                              "Sig.",
+                              "Std Beta",
+                              "Tolerance",
+                              "VIF")
+
+# Print to check the cleaning
+cleaned.multiple.regression.list[[ii]] <- model1.df.rounded %>%
+  kbl(caption = paste("Table 3: Initial multiple regression predicting",names(frequency.bands)[ii]),
+      align = "lccclcccc",
+      font = 20) %>%
+  kable_classic_2(font_size = 16,
+                  full_width = FALSE,
+                  html_font = "Times New Roman") %>%
+  gsub("font-size: initial !important;", "font-size: 14pt !important;", .) %>% # Title font size!
+  row_spec(0,bold=TRUE) %>%
+  footnote(general_title = "*** indicates p <.001; ** indicates p <.01; * indicates p <.05",
+           general =  c(line.1, 
+                        line.2, 
+                        line.3))
+}
+
+cleaned.multiple.regression.list[[1]]
+cleaned.multiple.regression.list[[2]]
+cleaned.multiple.regression.list[[3]]
+cleaned.multiple.regression.list[[4]]
+```
+
+
+
+### Run several models 
+
+```{r run severl models}
+#model.gender <- lm(delta ~ Sex, data2)
+
+# Obtain their summarize
+#summary(model.gender)
+#summary(model.group)
+
+#data2 %>%
+ # group_by(Sex) %>%
+#  summarize(mean.delta = mean(delta))
+
+# Adding group to the model
+#aov.gender.group <- aov(delta~ as.factor(Sex)*as.factor(Group), data2, family = "gaussian")
+
+#summary(model.gender.group) #Male IC is the reference group
+
+#mean(data2$delta)
+```
+
+
+
+### Run a multiple regression predicting the power of each frequency band with an interaction
+
+```{r running multiple regressions with interaction}
+# Create a list to save all of this information in
+multiple.regression.interaction.list <- list()
+
+for(ii in 1:length(select(frequency.bands, - Topography))) {
+
+# Create the model
+model2 <- lm(select(frequency.bands, - Topography)[[ii]] ~ Total_SpellingError * Age + Raw.Scores + Male + IC , data2)
+
+#################################### Part 1: Obtaining the R^2 and more #############################
+
+# Save the model summary into an object
+model.summary <- summary(model2)
+
+# Creating the foot note for the model
+# Create line 1
+line.1 <- paste("Residual standard error:",round(model.summary$sigma,4),", on",model2$df.residual,"degrees of freedom")
+
+# Create line 2
+line.2 <- paste("Multiple R-squared:",round(model.summary$r.squared,4),", Adjusted R-squared: ",round(model.summary$adj.r.squared,5), sep =" ")
+
+# Calculate p value for line 3
+regression.p.value <- pf(model.summary$fstatistic[1], model.summary$fstatistic[2], model.summary$fstatistic[3], lower.tail = FALSE)
+
+# Create line 3
+line.3 <- paste("F-statistic: ",round(model.summary$fstatistic[1],2)," on ",round(model.summary$fstatistic[2],4)," and ",round(model.summary$fstatistic[3],4)," DF,  p-value:", regression.p.value)
+
+
+################################ Part 2: Introduce VIF and more ######################3
+
+
+# Save the models as a dataframe
+model2.df <- broom::tidy(model2)
+
+# Calculate the standardized betas from the model and save them into the model.df
+model2.df$standardized.beta <- c(NA,lm.beta(model2))
+
+# Calculate the tolerance
+model2.df$Tolerance <- c(NA,1/vif(model2))
+
+# Calculate the VIF of the model
+model2.df$VIF <- c(NA,vif(model2))
+
+# Save the model into the list
+multiple.regression.interaction.list[[ii]] <- model2.df
+
+}
+
+
+```
+
+### Make the multiple regression look prettier 
+
+```{r make the regression with the interaction look pretty}
+# Create a list to clean the data for
+cleaned.multiple.regression.interaction.list <- list()
+
+for(ii in 1:length(multiple.regression.interaction.list)) {
+
+# Round only numeric variables in the dataframe
+model1.df.rounded <- multiple.regression.interaction.list[[ii]] %>%
+  mutate(across(where(is.numeric), ~round(.x, 2)))
+
+# Add a function to clean up the p-values
+model1.df.rounded <- model1.df.rounded %>%
+  mutate(p.value = case_when(p.value < .001 ~ paste(format(p.value, nsmall = 2),"***",sep=""),
+                              p.value < .01 ~ paste(format(p.value, nsmall = 2),"**",sep=""),
+                              p.value < .05 ~ paste(format(p.value,nsmall = 2),"*",sep=""),
+                              TRUE ~ paste(p.value)))
+
+# Change the term values
+model1.df.rounded$term <- c("(Intercept)",
+                            "Spelling Error",
+                            "Age",
+                            "Raw CFIT Score",
+                            "Male",
+                            "IC",
+                            "Spelling Error x Age")
+
+# Change the names of the model output
+names(model1.df.rounded) <- c("Model", 
+                              "Beta",
+                              "Std. Error",
+                              "t",
+                              "Sig.",
+                              "Std Beta",
+                              "Tolerance",
+                              "VIF")
+
+# Print to check the cleaning
+cleaned.multiple.regression.interaction.list[[ii]] <- model1.df.rounded %>%
+  kbl(caption = paste("Table 4: Second multiple regression with interaction predicting",names(frequency.bands)[ii]),
+      align = "lccclcccc",
+      font = 20) %>%
+  kable_classic_2(font_size = 16,
+                  full_width = FALSE,
+                  html_font = "Times New Roman") %>%
+  gsub("font-size: initial !important;", "font-size: 14pt !important;", .) %>% # Title font size!
+  row_spec(0,bold=TRUE) %>%
+  footnote(general_title = "*** indicates p <.001; ** indicates p <.01; * indicates p <.05",
+           general =  c(line.1, 
+                        line.2, 
+                        line.3))
+
+}
+
+
+cleaned.multiple.regression.interaction.list[[1]]
+cleaned.multiple.regression.interaction.list[[2]]
+cleaned.multiple.regression.interaction.list[[3]]
+cleaned.multiple.regression.interaction.list[[4]]
+```
+
+
+### Explicitly centering variables
+
+```{r centering variables}
+data2$Spelling_Error_gmc <- data2$Total_SpellingError - mean(data2$Total_SpellingError)
+data2$Age_gmc <- data2$Age - mean(data2$Age)
+data2$Raw.Scores_gmc <- data2$Raw.Scores - mean(data2$Raw.Scores)
+
+# Checking to make sure this occurred
+round(describe(data2),2) %>%
+  kbl() %>%
+  kable_paper(full_width = F)
+```
+
+
+### Run a multiple regression predicting the power of each frequency band with an interaction with CENTERED PREDICTORS
+
+```{r running multiple regressions with interaction and centered predictors}
+# Create a list to save all of this information in
+multiple.regression.interaction.centered.list <- list()
+
+for(ii in 1:length(select(frequency.bands, -Topography))) {
+
+# Create the model
+model3 <- lm(select(frequency.bands, -Topography)[[ii]] ~ Spelling_Error_gmc * Age_gmc + Raw.Scores_gmc + Male + IC , data2)
+
+#################################### Part 1: Obtaining the R^2 and more #############################
+
+# Save the model summary into an object
+model.summary <- summary(model3)
+
+# Creating the foot note for the model
+# Create line 1
+line.1 <- paste("Residual standard error:",round(model.summary$sigma,4),", on",model3$df.residual,"degrees of freedom")
+
+# Create line 2
+line.2 <- paste("Multiple R-squared:",round(model.summary$r.squared,4),", Adjusted R-squared: ",round(model.summary$adj.r.squared,5), sep =" ")
+
+# Calculate p value for line 3
+regression.p.value <- pf(model.summary$fstatistic[1], model.summary$fstatistic[2], model.summary$fstatistic[3], lower.tail = FALSE)
+
+# Create line 3
+line.3 <- paste("F-statistic: ",round(model.summary$fstatistic[1],2)," on ",round(model.summary$fstatistic[2],4)," and ",round(model.summary$fstatistic[3],4)," DF,  p-value:", regression.p.value)
+
+
+################################ Part 2: Introduce VIF and more ######################3
+
+
+# Save the models as a dataframe
+model3.df <- broom::tidy(model3)
+
+# Calculate the standardized betas from the model and save them into the model.df
+model3.df$standardized.beta <- c(NA,lm.beta(model3))
+
+# Calculate the tolerance
+model3.df$Tolerance <- c(NA,1/vif(model3))
+
+# Calculate the VIF of the model
+model3.df$VIF <- c(NA,vif(model3))
+
+# Save the model into the list
+multiple.regression.interaction.centered.list[[ii]] <- model3.df
+
+}
+
+
+```
+
+### Make the multiple regression look prettier 
+
+```{r make the centered interaction regression look prettier}
+# Create a list to clean the data for
+cleaned.multiple.regression.interaction.centered.list <- list()
+
+for(ii in 1:length(multiple.regression.interaction.centered.list)) {
+
+# Round only numeric variables in the dataframe
+model1.df.rounded <- multiple.regression.interaction.centered.list[[ii]] %>%
+  mutate(across(where(is.numeric), ~round(.x, 2)))
+
+# Add a function to clean up the p-values
+model1.df.rounded <- model1.df.rounded %>%
+  mutate(p.value = case_when(p.value < .001 ~ paste(format(p.value, nsmall = 2),"***",sep=""),
+                              p.value < .01 ~ paste(format(p.value, nsmall = 2),"**",sep=""),
+                              p.value < .05 ~ paste(format(p.value,nsmall = 2),"*",sep=""),
+                              TRUE ~ paste(p.value)))
+
+# Change the term values
+model1.df.rounded$term <- c("(Intercept)",
+                            "Spelling Error (C)",
+                            "Age (C)",
+                            "Raw CFIT Score (C)",
+                            "Male",
+                            "IC",
+                            "Spelling Error (C) x Age (C)")
+
+# Change the names of the model output
+names(model1.df.rounded) <- c("Model", 
+                              "Beta",
+                              "Std. Error",
+                              "t",
+                              "Sig.",
+                              "Std Beta",
+                              "Tolerance",
+                              "VIF")
+
+# Print to check the cleaning
+cleaned.multiple.regression.interaction.centered.list[[ii]] <- model1.df.rounded %>%
+  kbl(caption = paste("Table 5: Final multiple regression with interaction and centered predictors predicting",names(frequency.bands)[ii]),
+      align = "lccclcccc",
+      font = 20) %>%
+  kable_classic_2(font_size = 16,
+                  full_width = FALSE,
+                  html_font = "Times New Roman") %>%
+  gsub("font-size: initial !important;", "font-size: 14pt !important;", .) %>% # Title font size!
+  row_spec(0,bold=TRUE) %>%
+  footnote(general_title = "*** indicates p <.001; ** indicates p <.01; * indicates p <.05",
+           general =  c(line.1, 
+                        line.2, 
+                        line.3))
+
+}
+
+
+cleaned.multiple.regression.interaction.centered.list[[1]]
+cleaned.multiple.regression.interaction.centered.list[[2]]
+cleaned.multiple.regression.interaction.centered.list[[3]]
+cleaned.multiple.regression.interaction.centered.list[[4]]
+```
+
+
+
+### Visualizing the interaction (delta model only)
+
+```{r visualizing the interaction}
+library(interactions)
+
+# delta model
+delta.model <- lm(Delta ~ Spelling_Error_gmc * Age_gmc + Raw.Scores_gmc + Male + IC, data = data2)
+
+# Plot the interaction effect of delta that was significant
+interact_plot(model = delta.model, pred = Spelling_Error_gmc, modx = Age_gmc)
+
+# Descriptive statistics of Age again
+continuous.predictors.table
+```
+
+
+### Visualizing the interaction on a 3D-plane (delta model only)
+
+```{r visualizing the interaction using a plane, out.width= "90%"}
+library(rockchalk)
+
+plotPlane(delta.model, 'Spelling_Error_gmc', 'Age_gmc',
+          phi = 15, theta = 140, 
+          ticktype = "detailed", x1lab = "Spelling Error (C)", x2lab = "Age (C)")
+
+```
+
+### Spelling errors as a function of age
+
+```{r spelling erros as a function fo age graph}
+data2 %>%
+  mutate(Spelling_Error_factor = ifelse(Total_SpellingError <= 4 , "low",
+                                        ifelse(Total_SpellingError <= 24, "medium", "high"))) %>%
+  ggplot(aes(x = Age, y = Delta, size = Total_SpellingError, color = Spelling_Error_factor)) +
+  geom_point(alpha = 0.2) +
+  theme_classic()
+
+describe(data2$Total_SpellingError)
+
+```
+
+## Post-estimation techniques
+
+
+### Assumption 1: Linearity
+
+We need to check if linearity is present by taking the residuals (Y - Y.hat) and plot it against every predictor in our model (I think this applies to continuous predictors) and to the fitted values. Then we will visually look for evidence of non linearity. To help with this, we can use locally weighted smooth (LOESS) lines on our scatterplots.  
+
+```{r plotting to check for linearity in the residuals, out.width= "90%"}
+# Add the residuals from the model to the dataset
+data2$residuals <- delta.model$residuals   
+
+# Add the fitted values to our data2 dataset
+data2$fitted.values <- predict(delta.model)
+
+# Create plots that look at residuals as a function to each predictor
+plot1 <- data2 %>%
+  ggplot(aes(x = Age_gmc, y = residuals)) +
+  geom_point() +
+  geom_smooth(method = "loess",
+              se = FALSE) +
+  labs(title = "(A) Residuals x Age_gmc") +
+  theme_classic()
+
+plot2 <- data2 %>%
+  ggplot(aes(x = Spelling_Error_gmc, y = residuals)) +
+  geom_point() +
+  geom_smooth(method = "loess",
+              se = FALSE) +
+  labs(title = "(B) Residuals x Spelling_Error_gmc") +
+  theme_classic()
+
+plot3 <- data2 %>%
+  ggplot(aes(x = Raw.Scores_gmc, y = residuals)) +
+  geom_point() +
+  geom_smooth(method = "loess",
+              se = FALSE) +
+  labs(title = "(C) Residuals x CFIT_Raw_Score_gmc") +
+  theme_classic()
+
+
+# Create a plot that look at residuals as a function to the fitted values
+plot4 <- data2 %>%
+  ggplot(aes(x = fitted.values, y = residuals)) +
+  geom_point() +
+  geom_smooth(method = "loess",
+              se = FALSE) +
+  labs(title = "(D) Residuals x Fitted_Values (Y.hat)") +
+  theme_classic()
+
+
+# plot all three graphs side by side
+ggarrange(plot1, plot2, 
+          plot3, plot4)
+
+```
+
+### Assumption 2: Homoscedasticity
+
+Now wee need to look at the spread (variance) of residuals for different levels of predictors and fitted values, respectively. We can do this by looking at the same plots from above. Additionally, we can add two more lowess lines to our scatterplots, one that represents the mean + 1 sd and the other that represents the mean - 1 sd. If theses lines look to be horizontal then there is homoscedasticity. However, if we see the lines starting to converge on each other (in the examples from Cohen (2002) this seems to happen at the edges of the plots) then there is heteroscedasticity. The issue with this is that heteroscedasticity messes with the calculations of confidence intervals, which will make our results inaccurate. 
+
+UNFORTUNATELY, I was unable to find a package or anything helpful online to help create these lines. Instead, we will just graph boxplots and look at their spread and compare them for each quintile of the predictor.
+
+The size of each box plot below shows to me that the assumption of homoscedasticity was not violated. 
+
+```{r checking the assumption of homoscedasticity}
+# Create a function that returns quintiles from a vector
+quintile.category.function <- function(vector) {
+  
+  # Create a data frame with the quantile information and the number associated with that quantile
+  quintile.tidy <- tidy(quantile(vector, probs = seq(0, 1, .2)))
+  
+  # Remove the first row from the dataframe since it is uninformative
+  quintile.tidy <- quintile.tidy %>%
+    filter(names != "0%")
+  
+  # Add an additional variable that takes our vector and classifies it as which quantile
+  vector.df <- data.frame(vector) %>%
+    mutate(quintile.category = case_when(
+        vector <= quintile.tidy$x[1] ~  quintile.tidy$names[1],
+        vector <= quintile.tidy$x[2] ~  quintile.tidy$names[2],
+        vector <= quintile.tidy$x[3] ~  quintile.tidy$names[3],
+        vector <= quintile.tidy$x[4] ~  quintile.tidy$names[4],
+        vector <= quintile.tidy$x[5] ~  quintile.tidy$names[5],
+        TRUE ~ "AHHH"
+    ))
+  
+  # Return the quintile category
+  factor(vector.df$quintile.category, levels = c("20%", "40%", "60%", "80%", "100%"))
+
+}
+
+# Use this created function and then map it to all of our predictors of interest
+data2 <- data2 %>%
+  mutate(Age_gmc_Quintiles = quintile.category.function(Age_gmc),
+         Spelling_Error_gmc_Quintiles = quintile.category.function(Spelling_Error_gmc),
+         Raw.Scores_gmc_Quintiles = quintile.category.function(Raw.Scores_gmc),
+         fitted.values_Quintiles = quintile.category.function(fitted.values)
+         )
+
+
+# Create box plots to observe the variance of the residuals for different quantiles of the predictors/fitted values
+plot1 <- data2 %>%
+  ggplot(aes(x = Age_gmc_Quintiles, y = residuals)) +
+  geom_boxplot() +
+  labs(title = "(A) Residuals x Age_gmc") +
+  theme_classic()
+
+
+plot2 <- data2 %>%
+  ggplot(aes(x = Spelling_Error_gmc_Quintiles, y = residuals)) +
+  geom_boxplot() +
+  labs(title = "(B) Residuals x Spelling_Error_gmc") +
+  theme_classic()
+
+plot3 <- data2 %>%
+  ggplot(aes(x = Raw.Scores_gmc_Quintiles, y = residuals)) +
+  geom_boxplot() +
+  labs(title = "(C) Residuals x CFIT_Raw_Score_gmc") +
+  theme_classic()
+
+
+# Create a plot that look at residuals as a function to the fitted values
+plot4 <- data2 %>%
+  ggplot(aes(x = fitted.values_Quintiles, y = residuals)) +
+  geom_boxplot() +
+  labs(title = "(D) Residuals x Fitted_Values (Y.hat)") +
+  theme_classic()
+
+
+# plot all three graphs side by side
+ggarrange(plot1, plot2, 
+          plot3, plot4)
+
+
+```
+
+```{r create a scatterplot with line}
+data2 %>%
+  ggplot(aes(x = Age_gmc, y = residuals)) +
+  geom_point() +
+  geom_smooth(se = F)
+
+```
+### Assumption 3: Normality of residuals
+
+In continuation with Jacob Cohen and colleagues (2002) textbook, two different graphical methods can be used to investigate the normality of the residuals. The first (and least accurate) is to create a histogram of the residuals and to superimpose a normal curve over it. The issue with this graph is that it is sometimes difficult to tell whether the graph looks normally distributed or not- especially in smaller sample sizes. The second approach is to use a q-q plot, which shows if the residuals are normal if they create a straight diagonal line. 
+
+Both the histogram and q-q plot of residuals are saying the same thing. That the right rail of our distribution is long/heavy. Our graphs show clearly that the assumption of normality was violated.
+
+A change was made below after reading more about outliers from Discovering Statistics Using R. While Cohen made a great point of graphing our residuals, the one major drawback is that these residuals are in the units of our outcome variable, which is delta power. It would be much more informative instead if we graph standardized residuals- that way we can see exactly how far they are away from the mean (0) in a standardized way (Aka if they are near 3 then we know these are problematic). The reason why standardized residuals larger than 3 are problematic is because they should be extremely rare in the data, for example, around 1 observation per 1,000 cases!
+
+We will insert lines showing the standardized residuals that are very likely to be problematic. 
+
+```{r plot the residuals for both models, out.width= "90%"}
+# Obtain standardized residuals
+data2$rstandard <- rstandard(delta.model)
+
+# Create a histogram of the outcome variable
+residual.plot1 <- data2 %>%
+  ggplot(aes(x = rstandard)) +
+  geom_histogram(aes(y = ..density..),
+                 fill = "white",
+                 color = "black",
+                 bins = 15) +
+  stat_function(fun = dnorm, args = list(mean = mean(data2$rstandard), 
+                                         sd = sd(data2$rstandard))) +
+  geom_vline(xintercept = 3, color = "red") +
+  scale_y_continuous(expand = c(0,0), limits = c(0, .6)) + 
+  theme_classic() +
+  labs(title = "A histogram of Standardized Residuals",
+       x = "Residuals",
+       y = "Density") +
+  theme(plot.title = element_text(size = 11,
+                                  hjust = 0.5),
+        axis.title = element_text(size = 10, face = "bold"),
+        axis.text = element_text(size = 10),
+        plot.caption = element_text(size = 8,
+                                    hjust = 0))
+
+# Create a QQ plot
+residual.plot2 <- data2 %>%
+  ggplot(aes(sample= rstandard)) +
+  geom_qq() +
+  stat_qq_line() +
+  geom_hline(yintercept = 3, color = "red") +
+  theme_classic() +
+  labs(title = "q-q plot of standardized residuals with\nsuperimposed straight line",
+       x = "Theoretical Quantiles",
+       y = "Standardized\nResiduals") +
+  theme(plot.title = element_text(size = 11,
+                                  hjust = 0.5),
+        axis.title = element_text(size = 10, face = "bold"),
+        axis.text = element_text(size = 10),
+        plot.caption = element_text(size = 8,
+                                    hjust = 0))
+
+
+# Create a QQ plot with a 95% CI
+residual.plot3 <- ggqqplot(data2$rstandard, 
+                           ggtheme = theme_pubclean()) +
+  geom_hline(yintercept = 3, color = "red") +
+  labs(title = "q-q plot of standardized residuals with\nan approximate 95% CI",
+       x = "Theoretical Quantiles",
+       y = "Standardized\nResiduals") +
+  theme(plot.title = element_text(size = 11,
+                                  hjust = 0.5),
+        axis.title = element_text(size = 10, face = "bold"),
+        axis.text = element_text(size = 10),
+        plot.caption = element_text(size = 8,
+                                    hjust = 0))
+
+
+# Create a scatterplot of fitted values to studentized residuals
+residual.plot4 <- data2 %>%
+  ggplot(aes(x = fitted.values, y = rstandard)) +
+  geom_point() +
+  geom_hline(yintercept = 3, color = "red") +
+  labs(title = "Standardized residuals as a function of\nfitted values",
+       x = "Theoretical Quantiles",
+       y = "Standardized\nResiduals") +
+  theme_classic() +
+  theme(plot.title = element_text(size = 11,
+                                  hjust = 0.5),
+        axis.title = element_text(size = 10, face = "bold"),
+        axis.text = element_text(size = 10),
+        plot.caption = element_text(size = 8,
+                                    hjust = 0))
+
+
+# Plot the graphs
+ggarrange(residual.plot1, residual.plot2,
+          residual.plot3, residual.plot4)
+
+```
+
+## Remedies: Alternative approaches when problems are detected
+
+Jacob Cohen (2002) mentions remedies to help with all possible assumption violations in OLS regression EXCEPT FOR NORMALITY! So we will be switching to a different textbook to help. This next portion will be reporting on topics mentioned in Andy Field and Jeremy Miles (2012) Discovering Statistics Using R. 
+
+
+### Background information on outliers
+
+Outliers can be defined as datapoints that are poorly predicted by the model when many other data points are predicted just fine. We can investigate if outliers are present by the same logic mentioned. If many data points are predicted well by the model, then we would except the difference between the observed value the the fitted value to be small. This is difference is called a residual. If we obtain the residuals for all of our data points, we can then standardized them to get an idea of just how far they are away from the fitted value in comparison to the other residuals. If they are too far away than would be expected, for example if they were 4 standard deviations away from the mean, then this would be a major reason for concern. 
+
+Now, there is a mathematical way to detect if we have the appropriate frequency/percentage of residual sizes in our data. For example, if we have 100 outcome scores, then we would expect 5 of them to be larger than 1.96 or smaller than -1.96. The same math can be done for larger/smaller residuals. Below we will be using a function to output exactly the frequency and percentage that would be expected for our data.
+
+
+```{r determining the number of expected residuals by size based on our sample size}
+# Print out a table showing the frequency and percentage of residual sizes based on our sample size
+residual.size.function <- function(df) {
+  
+  # Calculate the size of the data
+  data.length <- nrow(df)
+  
+  # Calculate the number of residuals that can be larger than the absolute value of 1.96
+  five.percent.residuals <- round(data.length * .05)
+  
+  # Calculate the number of residuals that can be larger than the absolute value of  2.58
+  one.percent.residuals <- round(data.length * .01)
+  
+  # Calculate the number of residuals that can be larger than the absolute of 3.29
+   point.one.percent.residuals <- round(data.length * .001)
+  
+  # Return a data.frame with this information and the percentage
+   data.frame(standard.deviation = c(1.96, 2.58, 3.29),
+              percentage = c(.05, .01, .001)*100,
+              frequency = c(five.percent.residuals, one.percent.residuals, point.one.percent.residuals),
+              sample.size = c(data.length, data.length, data.length))
+}
+
+# Save information from the function
+Residual.Table <- residual.size.function(data2)
+
+
+# Print the table
+Residual.Table %>%
+  kbl() %>%
+  kable_paper(full_width = F)
+```
+
+
+### Comparing our errors to the acceptable level of error from our sample size
+
+Below we can compare the table from above to a table created from our data. Looking at the standardized residuals alone, we can see that the total number of residuals that are more than 1.96 sd away from the mean is acceptable. However, this no longer becomes the case for residuals that are farther than 2.58 sd away from the mean. 
+
+```{r comparing the number of error sizes in our data}
+# We will now bring forward the number and percentage of residuals that are larger than the residual thesholds imposed above
+frequency.residual.size.function <- function(vector) {
+  
+  vector.length = length(vector)
+  # obtain the number of residuals larger than the absolute value of 1.96
+  larger.1.96 <- sum(abs(vector) > 1.96) 
+  
+  # obtain the number of residuals larger than the absolute value of 2.58
+  larger.2.58 <- sum(abs(vector) > 2.58)
+  
+  # obtain the number of residuals larger than the absolute value of 3.29
+  larger.3.29 <- sum(abs(vector) > 3.29)
+  
+  # Return a data.frame with this information and the percentage
+  data.frame(standard.deviation = c(1.96, 2.58, 3.29),
+             percentage = round(c(larger.1.96, larger.2.58, larger.3.29)/vector.length,3)*100,
+             frequency = c(larger.1.96, larger.2.58, larger.3.29),
+             sample.size = c(vector.length, vector.length, vector.length))
+}
+
+# Save our residual table
+Our.Residual.Table <- frequency.residual.size.function(data2$rstandard)
+
+# Print the two tables side by side
+cbind(Residual.Table,
+      Our.Residual.Table) %>%
+  kbl() %>%
+  kable_classic(full_width = F) %>%
+  add_header_above(c("Expected Residual Numbers" = 4 , "Obtained Residual Numbers" = 4))
+
+```
+
+### Background information on influential cases
+
+There are several other tests aside from the size of the residuals that we can use to further investigate if our residual is an outlier or not. We will be covering three of them which are cooks distance, leverage, and covariance ratio.
+
+Cooks distance is the overall influence a case has on the model and if the value is at a distance greater than 1 then that's a problem.
+
+The average leverage (hat values) can be calculated by adding 1 to your total number of predictors and then dividing by your sample size aka (k+1)/n. These values are between 0 and 1. There is no agreed upon consensus on when this is problematic but typically values that are 2 or 3 times bigger than the average leverage are problematic. 
+
+The covariance ratios are not well explained but important nonetheless. We need to identify cases where the values are outside the following boundaries. On further inspection- this just seems to be another way of expressing leverage... I think. 
+- CVR > 1 + [3(k + 1)/n]
+- CVR < 1 - [3(k + 1)/n]
+
+We will only be investigating these values in the residuals that are considered large, we will define large by being more than 2 standard deviations away from the mean. 
+
+It seems that from these three types of casewise diagnostics, the most important one is cooks distance. Since, there are no instances where a value for cook's distance is greater than 1, then all of these should be okay?
+
+On further reading, the non normal distribution of errors is in fact related to having extreme residuals in the model. This means that some people in our data have much much higher delta power than would be expected! This is problematic because since the assumption of normality seems to be violated, then that means we cannot generalize our results beyond our sample. 
+
+```{r lets investigate influential cases}
+# Add cooks distance, leverage, and the covariance.ratios to our dataset
+data2$cooks.distance <- round(cooks.distance(delta.model),4)
+data2$leverage <- round(hatvalues(delta.model),4)
+data2$covariance.ratios <- round(covratio(delta.model),4)
+
+# Add another variable that prints values that are outside the boundary of covariance ratio
+k = length(attr(delta.model$terms,  "term.labels"))
+n = nrow(data2)
+
+# Make it easier to see residuals that are outside the covariance ratio boundaries
+data2 <- data2 %>%
+  mutate(outside.covariance.ratios = case_when(
+    
+    covariance.ratios > 1 + (3*(k + 1)/n) ~ paste(covariance.ratios, ">", round(1 + (3*(k + 1)/n),4)),
+    covariance.ratios < 1 - (3*(k + 1)/n) ~ paste(covariance.ratios, "<",  round(1 - (3*(k + 1)/n),4)),
+    TRUE ~ ""
+  ))
+
+# Add a z score to delta so we can use it later to compare
+data2 <- data2 %>%
+  mutate(Delta = round(Delta,4),
+         Delta.z = round(scale(Delta),4))
+
+# Extract all the large residuals from data2
+large.residuals <- data2 %>%
+  filter(rstandard > 1.96)
+ 
+# Let's view the columns of interest for these residuals
+larger.residuals.df <- cbind(select(large.residuals, ID:Delta),
+                             select(large.residuals, Delta.z),
+                             select(large.residuals, rstandard:outside.covariance.ratios))
+
+# Print this table to visually inspect
+larger.residuals.df %>%
+  arrange(desc(rstandard)) %>%
+  kbl(caption = "Table showing all data where residuals are farther than 1.96 sd from the mean") %>%
+  kable_paper(full_width = F)
+```
+
+
+### Remove the outliers?
+
+What if we completely redo the analysis but in this case- we will remove any cases where the residual is larger than 3x the standard deviation. This should result in the removal of 8 subjects. The goal for this section is to do a quick and dirty analysis with minimal graphing. Our main goals are two fold, first to see if the model reports the same as the model from above and second to see if plotting the residuals now looks more normal.
+
+```{r recreating the analysis quick and dirty, out.width = "60%"}
+# Save the problematic residuals from above
+problematic.residual.IDs <- larger.residuals.df %>%
+  filter(rstandard > 3) %>%
+  select(ID) %>%
+  unlist()
+
+# Remove the problematic IDs and save this into data3
+data3 <- data2 %>%
+  filter(!(ID %in% problematic.residual.IDs))
+
+# Run the model on delta
+model.no.outliers <- lm(Delta ~ Total_SpellingError * Age_gmc + Raw.Scores_gmc + Male + IC , data3)
+
+# Run the summary of the model
+summary(model.no.outliers)
+
+# Plot the residuals!
+plot(model.no.outliers)
+```
+
+### Quantile Regressions
+
+### Graph the beta coefficients of the predictors of interest
+
+
+### Code to make larger table font
+
+  kbl(caption = "Table 1: Descriptive Statistics of Continuous Predictors",
+      align = "lccc",
+      font = 20) %>%
+  kable_classic_2(font_size = 19,
+                  full_width = TRUE,
+                  html_font = "Times New Roman") %>%
+  gsub("font-size: initial !important;", "font-size: 16pt !important;", .) %>% # Title font size!
