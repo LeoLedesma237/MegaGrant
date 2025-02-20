@@ -1,6 +1,4 @@
-% Load in EEGLAB
-cd('C:\Users\lledesma.TIMES\Documents\MATLAB\eeglab2022.0')
-eeglab
+
 
 % Set the working directory
 cd('Y:\STUDY 1\All EEG Files Organized\Preprocessed_RAW')
@@ -9,7 +7,7 @@ cd('Y:\STUDY 1\All EEG Files Organized\Preprocessed_RAW')
 filename = 'EEG Raw File Names.xlsx';
 
 % Read the data from the Excel file
-data2 = readtable(filename, 'Sheet', 2);
+data = readtable(filename, 'Sheet', 1);
 
 
 % 1. Set Input filepath 
@@ -19,7 +17,7 @@ input_filepath = 'Y:\STUDY 1\All EEG Files Organized\RAW';
 save_pathway = 'Y:\STUDY 1\All EEG Files Organized\Preprocessed_RAW\RAW_eyes_open_and_eyes_closed';
 
 % % % % % REMAINING CODE IS AUTOMATIC % % % % % % % % 
-eegFiles = data2.all_eeg;
+eegFiles = data.all_eeg;
 
 % Remove redundancies
 % Only unprocessed files will be ran by the for loop below
@@ -46,15 +44,18 @@ filesToRemove = {'example1'};
 % Remove problematic EEG files
 eegFiles = eegFiles(~ismember(eegFiles, filesToRemove));
 
+
+
 % Start the for loop
 for iii = 1:length(eegFiles)
-    % iii = 1
+
     CurrentFileName = eegFiles{iii}
     fullpath = strcat(input_filepath,'\',CurrentFileName);
     
     %Import data - change the name of the ID
     EEG = pop_fileio(fullpath, 'dataformat','auto');
     [ALLEEG EEG CURRENTSET] = pop_newset(ALLEEG, EEG, 0,'setname','ID#_Imported','gui','off');
+    
     
     % The markers show the latency of when they start, meaning at what data
     % sample it begins. We have to turn this into seconds so we can segment the
@@ -69,19 +70,29 @@ for iii = 1:length(eegFiles)
     Marker_array = Marker_array';
     
     % Use this formula to bring forth the latency for the marker of interest
+    S1rowIdx = strcmp(Marker_array(:,1), 'S  1');
     S2rowIdx = strcmp(Marker_array(:,1), 'S  2');
+    S3rowIdx = strcmp(Marker_array(:,1), 'S  3');
     
+    S1Row = Marker_array(S1rowIdx,:);
     S2Row = Marker_array(S2rowIdx,:);
+    S3Row = Marker_array(S3rowIdx,:);
     
     % Take the latencies and divide by 1000 to convert them into seconds
+    S1_Latency = S1Row{2}/EEG.srate; % The start (sec) of the eyes closed condition
     S2_Latency = S2Row{2}/EEG.srate; % The start (sec) of the eyes opened condition
+    S3_Latency = S3Row{2}/EEG.srate; % The end (sec) of the eyes open condition
     
-    % Use the marker to segment the data for eyes open and eyes closed
-    Closed_EEG = pop_epoch( EEG, {  'S  2'  }, [-180  0], 'epochinfo', 'yes');
+    
+    Eyes_Closed_Sec = S2_Latency - S1_Latency;
+    Eyes_Open_Sec = S3_Latency - S2_Latency;
+    
+    % Use the marker to segment the daya for eyes open and eyes closed
+    Closed_EEG = pop_epoch( EEG, {  'S  1'  }, [0  Eyes_Closed_Sec], 'epochinfo', 'yes');
     Closed_EEG = eeg_checkset( Closed_EEG );
     Closed_EEG = pop_rmbase( Closed_EEG, [],[]);
     
-    Open_EEG = pop_epoch( EEG, {  'S  2'  }, [0  180], 'newname', 'ID#_Imported epochs', 'epochinfo', 'yes');
+    Open_EEG = pop_epoch( EEG, {  'S  2'  }, [0  Eyes_Open_Sec], 'newname', 'ID#_Imported epochs', 'epochinfo', 'yes');
     Open_EEG = eeg_checkset( Open_EEG );
     Open_EEG = pop_rmbase( Open_EEG, [],[]);
     
@@ -103,4 +114,3 @@ for iii = 1:length(eegFiles)
     Current_file = eegFiles{iii};
 
 end
-
