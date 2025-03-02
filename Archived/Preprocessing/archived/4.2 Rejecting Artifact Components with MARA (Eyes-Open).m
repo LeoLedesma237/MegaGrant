@@ -1,32 +1,31 @@
 % Load in EEGLAB
-cd('C:\Users\lledesma.TIMES\Documents\MATLAB\eeglab2022.0')
+cd('C:\Users\lledesma\Documents\MATLAB\eeglab2024.2')
 eeglab
 
+%1. Set the location to excel file with eyes open infomation
+excel_loc = '\\files.times.uh.edu\labs\MIR_Lab\MEGAGRANT\STUDY 1\MODIFIED_DS\EEG\rsEEG\';
 
-% Set the working directory
-cd('Y:\STUDY 1\All EEG Files Organized\Preprocessed_RAW')
-
-% Specify the filename
-filename = 'EEG Raw File Names2.xlsx';
-
-% Read the data from the Excel file (Eyes-Open)
-data = readtable(filename, 'Sheet', 2);
-
-
-
-% 1. Set the folder path to record the names of all the files there
+% 2. Set the folder path to record the names of all the files there
 % that need ICA run
 input_filepath = 'Y:\STUDY 1\All EEG Files Organized\Preprocessed_RAW\RAW_eyes_open_and_eyes_closed_after_ICA\'; % replace with the path to your folder
 
-% 2. Set the folder path that you want the EEG data saved in
+% 3. Set the folder path that you want the EEG data saved in
 save_pathway = 'Y:\STUDY 1\All EEG Files Organized\Preprocessed_RAW\RAW_eyes_open_and_eyes_closed_after_component_rejection\';
 
-% 3. Set the folder path that you want the CSV reports to be saved
+% 4. Set the folder path that you want the CSV reports to be saved
 save_pathway_csv = 'Y:\STUDY 1\All EEG Files Organized\Preprocessed_RAW\CSV_components rejected\';
 
 
 % % % % % % Part 1: Reading in all the files in specified folder % % % % %
 % % % % % % REMAINING CODE IS AUTOMATIC % % % % % % % % 
+
+% Specify the filename
+filename = append(excel_loc, 'EEG_Raw_File_Names2.xlsx');
+
+% Read the data from the Excel file (Eyes-Open)
+data = readtable(filename, 'Sheet', 2);
+
+% Save this information into fileNames
 fileNames = data.file_name2;
 
 % Remove redundancies

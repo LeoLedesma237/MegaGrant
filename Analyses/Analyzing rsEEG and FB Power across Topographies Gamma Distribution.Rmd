@@ -36,22 +36,20 @@ library(interactions) # interact_plot
 
 ```{r load in predictor variable, warning= FALSE}
 # Set the working directory
-setwd('C:/Users/lledesma.TIMES/Documents/MegaGrant/Processed')
+Mega <- '\\\\files.times.uh.edu/labs/MIR_Lab/MEGAGRANT/STUDY 1/FINAL_DS'
+setwd(Mega)
 
-# Load in the ARFA performance measures
-ARFA <- read.csv("BehavioralData/ARFA.Spelling.Errors.Scored.csv")
+# load data
+demo <- read_excel("Demo/MegaGrant_TBL_Database_Newest_MCh with duration.xlsx")
+ARFA <- read.csv("ARFA/ARFA.Spelling.Errors.Scored.csv")
+CFIT <- read.csv("CFIT/CFIT.scores.csv")
+fftx <- read.csv("EEG/rsEEG/topographyFBAvgPowFFT.csv")
+welchx <-  read.csv("EEG/rsEEG/topographyFBAvgPowWelch.csv")
 
-# Add Spelling ERror Variable
+
+# Data cleaning
+CFIT <- select(CFIT, ID, IQRS = Raw.Scores)
 ARFA <- select(ARFA, ID, Total_SpellingError)
-
-# Load in the rsEEG datasets
-eyes.closed <- read_excel("EEGData/EEG Eyes Open and Closed FB Power (Whitford, 2007).xlsx", sheet = "eyes.closed")
-eyes.open <-  read_excel("EEGData/EEG Eyes Open and Closed FB Power (Whitford, 2007).xlsx", sheet = "eyes.open")
-
-# load in demographic information
-demo <- read_excel("MegaGrant_TBL.xlsx")
-
-# data cleaning
 demo <- demo %>%
   select(ID, 
          Sex, 
@@ -60,19 +58,21 @@ demo <- demo %>%
   mutate(ID = as.numeric(ID),
          Age = as.numeric(Age)) 
 
-
-# Load in the CFIT data
-CFIT <- read.csv("BehavioralData/CFIT.scores.csv")
-
-# Data cleaning
-CFIT <- select(CFIT, ID, Raw.Scores)
+# EEG data cleaning
+fftx$ID <- as.numeric(gsub("\\D", "",  sapply(str_split(fftx$filename,"_"), function(x) x[1])))
+welchx$ID <- as.numeric(gsub("\\D", "",  sapply(str_split(welchx$filename,"_"), function(x) x[1])))
+fftx <- select(fftx, -filename)
+welchx <- select(welchx, -filename)
+names(fftx) <- c(paste0(names(fftx)[1:(length(fftx)-1)],"_fftx"),"ID")
+names(welchx) <- c(paste0(names(welchx)[1:(length(fftx)-1)],"_welchx"),"ID")
 
 
 ### Combine the dataset into one
 data <- demo %>%
   full_join(CFIT, by = "ID") %>%
   full_join(ARFA, by = "ID") %>%
-  full_join(eyes.closed, by = "ID")
+  full_join(fftx, by = "ID") %>%
+  full_join(welchx, by = "ID")
 ```
 
 
@@ -89,10 +89,10 @@ data <- demo %>%
 
 ```{r keep non rejects subjects}
 # Set the working directory
-setwd('C:/Users/lledesma.TIMES/Documents/MegaGrant/Processed')
+setwd(Mega)
 
 # Load in the final sample data
-Final_Sample_Size <- read_excel("Final.Sample.Size.xlsx")
+Final_Sample_Size <- read_excel("EEG/rsEEG/Final.Sample.Size.xlsx")
 
 # Index the data by the IDs in the final sample size
 data2 <- data %>%
@@ -104,6 +104,7 @@ data2 <- data %>%
 ### Missing data
 
 - All data should be present based on the index from the previous section
+
 
 ```{r reporting missing data part 1,  results= 'asis', echo = FALSE}
 cat("This is an automated response: The current dataset has the dimensions",paste(dim(data2), collapse = " x "),". Below is a frequency table showing the number of missing data for each variable.")
@@ -140,7 +141,6 @@ cat("This is an automated response: Our final sample size is n=",length(unique(d
 - We are interested in investigating spelling performance as a predictor of EEG activity. We hypothesize that spelling ability will result in differences in brain activity while controlling for covariates like Age, Group (Bio vs Ins), and topography. 
 
 
-
 ## Descriptive statistics of the data
 
 We can use the describe() function from the psych package to give us descriptive statistics from the variables that will be incorporated into the model. We will create 3 tables. The first will contain information about the continuous predictors. The next will have the frequency of the categorical variables. Lastly we will have a table for the resting-state EEG frequency bands. 
@@ -150,8 +150,16 @@ We will be creating models for 4 differenet frequency bands (delta, theta, alpha
 ### Descriptives of our data
 
 ```{r descriptive statistics of continuous predictors}
-data2_cont <- data2 %>% select(Age, Raw.Scores, Total_SpellingError, frontal_delta:occipital_beta)
-describe(data2_cont)
+# Puts it in scientific notation
+options(scipen = 0)
+
+# Select continuous variables
+data2_cont <- data2 %>% select(ID, Age, IQRS, Total_SpellingError, frontal_avgdelta_fftx:occipital_avgbeta_welchx)
+
+data.frame(describe(data2_cont)) %>%
+  round(3) %>%
+  kbl() %>%
+  kable_minimal() 
 
 # Categorical information
 table(data2$Sex)
@@ -159,18 +167,81 @@ table(data2$Group)
 ```
 
 
+### FFT vs Pwelch
+
+- Let's compare the variance of power between FFT and Welch Method approach
+- Must fix issue with parietal data in fftx- right now the comparison is not meaningful
+- For right now we will conduct the rest of the analysis for Welch's Method
+
+```{r comparing variance of power between FFT and Welch Method}
+# Saving each type of EEG processing in their own datasets
+EEGfftx <- select(data2, ID, frontal_avgdelta_fftx:occipital_avgbeta_fftx)
+EEGWelchx <- select(data2, ID, frontal_avgdelta_welchx:occipital_avgbeta_welchx)
+
+# Converting each to long
+EEGfftxL <- EEGfftx %>%
+  pivot_longer(-ID, names_to = "Var", values_to = "Power")
+EEGWelchx <- EEGWelchx %>%
+  pivot_longer(-ID, names_to = "Var", values_to = "Power")
+
+# Introduce more variables
+EEGfftxL <- EEGfftxL %>%
+  mutate(Topography = sapply(str_split(Var,"_"), function(x) x[1]),
+         FreqBand = sapply(str_split(Var,"_"), function(x) x[2]),
+         Method = sapply(str_split(Var,"_"), function(x) x[3])) %>%
+  select(-Var)
+
+EEGWelchx <- EEGWelchx %>%
+  mutate(Topography = sapply(str_split(Var,"_"), function(x) x[1]),
+         FreqBand = sapply(str_split(Var,"_"), function(x) x[2]),
+         Method = sapply(str_split(Var,"_"), function(x) x[3])) %>%
+  select(-Var)
+
+# Join them back together
+EEGfftxWelch <- EEGfftxL %>%
+  full_join(EEGWelchx, by = c("ID", "Topography", "FreqBand", "Method", "Power"))
+
+# Group the variables to create an accurate z-score
+EEGfftxWelch2 <- EEGfftxWelch %>%
+  group_by(Topography, FreqBand, Method) %>%
+  summarise(zscore = scale(Power))
+
+# Create a comprehensive box plot of these data
+EEGfftxWelch2 %>%
+  ggplot(aes(x = Topography, y = zscore, fill = FreqBand)) +
+  geom_boxplot() +
+  facet_grid(~Method)
+
+EEGfftxWelch3 <- EEGfftxWelch %>%
+  filter(Power < 10000) %>%
+  group_by(Topography, FreqBand, Method) %>%
+  summarise(zscore = scale(Power))
+
+# Create another boxplot removing that one outlier
+EEGfftxWelch3 %>%
+  ggplot(aes(x = Topography, y = zscore, fill = FreqBand)) +
+  geom_boxplot() +
+  facet_grid(~Method)
+```
+
+
+
 ### Visualizing all continuous variables as histograms (Z-scores)
 
 - This drives home the message that the outcome variable is highly skewed to the right in all possible combinations of FB and Topography.
 
 ```{r visualize all variables as histograms, out.width= "33%"}
+# Removing fftx variables
+data3_cont <- data2_cont %>%
+  select(Age:Total_SpellingError, frontal_avgdelta_welchx:occipital_avgbeta_welchx)
+
 # Plot the histograms of all continuous variables
 histograms.list <- list()
 
-for(ii in 1:length(data2_cont)) {
+for(ii in 1:length(data3_cont)) {
 
   # Save the current var into an object
-  current_var <- unlist(data2_cont[,ii])
+  current_var <- unlist(data3_cont[,ii])
   
   # Convert it into a z-score
   current_var_z <- scale(current_var)
@@ -182,7 +253,7 @@ for(ii in 1:length(data2_cont)) {
       geom_histogram(fill = "white",
                      color = "black",
                      bins = 20) +
-      labs(title = paste0(names(data2_cont[,ii]),"_z")) +
+      labs(title = paste0(names(data3_cont[,ii]),"_z")) +
       theme(plot.title = element_text(size = 14, hjust = 0.5)) +
     theme_classic()
 
@@ -199,7 +270,7 @@ for(ii in 1:length(data2_cont)) {
 - Raw scores and total spelling error is kinda high but I think okay
 
 ```{r run a correlation matrix}
-cor(select(data2_cont, Age, Raw.Scores, Total_SpellingError))
+cor(select(data3_cont, Age, IQRS, Total_SpellingError))
 
 ```
 
@@ -228,78 +299,98 @@ We see here that the z-score distribution is larger, but that is highly likely t
 ```{r preparing data for modeling}
 # Converting the data into long format to isolate topography and FB
 data3 <- data2 %>%
-  pivot_longer(cols= c(frontal_delta:occipital_beta),
-               values_to = "Power")
+  select(ID:Total_SpellingError, frontal_avgdelta_welchx:occipital_avgbeta_welchx) %>%
+  pivot_longer(cols= c(frontal_avgdelta_welchx:occipital_avgbeta_welchx),
+               names_to = "Var", values_to = "Power")
 
 # Separate 'name' into  two variables
-data3$Topography <- sapply(str_split(data3$name, "_"), function(x) x[1])
-data3$FB <- sapply(str_split(data3$name, "_"), function(x) x[2])
-data3 <- select(data3, - name)
-
-# Convert the graph into z_scores
-data3$Power_z <- as.vector(scale(data3$Power))
-
-# Graph the histogram of z-scores
-hist(data3$Power_z)
+data3$Topography <- sapply(str_split(data3$Var, "_"), function(x) x[1])
+data3$FreqBand <- sapply(str_split(data3$Var, "_"), function(x) x[2])
+data3 <- select(data3, - Var)
 
 # Create a box plot to see brain activity across regions
 data3 %>%
-  ggplot(aes(x = FB ,y= Power, color = Topography)) +
+  ggplot(aes(x = FreqBand ,y= Power, color = Topography)) +
   geom_boxplot() +
-  theme_classic()
+  theme_classic() +
+  coord_flip()
 
-# IDs with high alpha power in the posterior
-alpha_post <-data3[data3$FB == "alpha" & data3$Topography == "occipital",]
+```
+### Running parallel processing
 
-# IDs with higher than 3 SD from the mean
-high_alpha_post <- alpha_post[alpha_post$Power_z >=3 | alpha_post$Power_z <= -3,]
-norm_alpha_post <- alpha_post[alpha_post$Power_z < 3 & alpha_post$Power_z >  -3,]
+Unsure if this actually is improving the computational speed of the model. I also don't feel like testing it. 
 
-# Print the top 20 IDs with high alpha power descending
-high_alpha_post %>%
-  arrange(desc(Power_z)) %>%
-  head(20)
+```{r running parallel processing}
+library(future)
+plan(multicore, workers = 12)  # Set number of workers (check your specs); use 'multisession' for windows or 'multicore' for Mac/Linux
 
-# Pick the first 20 IDs with normal alpha power in occipital
-norm_alpha_post %>%
-  head(20)
 ```
 
 
-### Removing Outliers
 
-In the boxplot above, We can see what what is driving the difference in the data is alpha power in the occipital region since it is much larger than in other FB x regions. A potential solution to removing outliers in the data might be to remove any data points within a topography x FB that is more than 3 SD from their mean. We can do that I believe by grouping the data and then scaling the power using the mutate() function.
+### Another Multicollinearity Test (VIF on the model)
 
-We can confirm this worked by comparing the z score differences between the two variables
 
-We will then remove the values that are 3 SD from the means of their respective groups- since we will be using mixed effects models, we do not have to drop the ID entirely if they are missing data since the model can handle it. 
+A better approach to measure **multicollinearity** is by using the variance inflation factor. We can obtain this value by first running a model. We will run a model here with our main predictors of interest- not interactions will be used.
 
-```{r removing outlier within frequency band and topography}
-# Create z-scores by group and FB combinations
-data4 <- data3 %>%
-  group_by(FB, Topography) %>%
-  mutate(Power_within_z = scale(Power))
 
-# Remove data that is more than 3 SD from their respective group x FB combination
-data4 <- data4 %>%
-  filter(Power_within_z < 3)
+```{r another multicollinearity test}
+# Center all continuous predictor- not needed now but will be important during interactions
+data3$Age_z <- c(scale(data3$Age))
+data3$Total_SpellingError_z <- c(scale(data3$Total_SpellingError))
+data3$IQRS_z <- c(scale(data3$IQRS))
 
-# Check the number of subjects remaining in the data
-length(unique(data4$ID))
-paste0("Removed ", nrow(data3) - nrow(data4), " observations from the dataset")
 
-# plot the boxplot again
-data4 %>%
-  ggplot(aes(x = FB ,y= Power, color = Topography)) +
-  geom_boxplot() +
-  theme_classic()
+# Run the model with all potential main effects to be included
+tic()
+muticollinearity_mod <-  glmer(Power ~ Age_z + Sex + Group + IQRS_z + Total_SpellingError_z + Topography + FreqBand + (1|ID), data = data3, 
+                            family = Gamma(link = "log"))
+toc()
+
+# Obtain a vif score
+vif(muticollinearity_mod)
+
 ```
+Looking at the **variance inflation factor (VIF)** of each predictor- there seems to be no multicollinearity so we are good to continue. 
 
+
+### Which Predictors to keep
+
+```{r identifying which predictors from above to keep}
+
+# Investigate the main effects
+Anova(muticollinearity_mod, type = "III")
+
+```
+Significant: Age_z, Topography, FreqBand
+
+Not-significant: Sex, Group, IQRS_c, Total_SpellingError_z
+
+Since Total_SpellingError_z is vital to the research question, it will remain as a predictor and then used for interactions with
+Age_z, Topography, and Frequency Band. 
+
+### Having Frequency Band as a Factor or an Outcome?
+
+In a perfect world, it would make sense to have Frequency Band as a Factor in the model for a few reasons. At face value, it is another predictor added to the model which could explain the variance of the outcome and we can use it to test higher order interactions. Thus, it has the opportunity to provides a wealth of information. There are however serious problems with having frequency bands as predictor. The model already has three predictors and in order to test our research question fully, then we would have to create a 4 way-interaction. This is problematic because it overcomplicated the model by a large margin and we do not have the sample size to be able to investigate it thoroughly. We have 449 observations, thus the rule of thumb is we should have one predictor for every 10-20 observations in our data. A 4-way interaction produces 66 free parameters, which is way more than we can handle. Also, when we plotted the data a few sections back, we saw that the variance of power was similar within frequency bands but highly differed across frequency bands- this could cause potential problems in our model and violated the assumption of heterogeneity. Lastly, if we create four models, each predicting their respective frequency band power outcome, then we could use three-way interactions and just compare trends of them in post without needing to use statistics. 
+
+```{r splitting the data by frequency band}
+# Remove uncentered predictors (QC)
+data4 <- select(data3, -c(Age,Total_SpellingError ))
+
+# Create a dataset for each FrequencyBand
+delta <- filter(data4, FreqBand == "avgdelta")
+theta <- filter(data4, FreqBand == "avgtheta") 
+alpha <- filter(data4, FreqBand == "avgalpha")
+beta <- filter(data4, FreqBand == "avgbeta")
+
+# Put these datasets into a list
+FBdat <- list(delta, theta, alpha, beta)
+```
 
 
 ### Running our models
 
-As mentioned, we are interested in how spelling performance may potentially influence electrical brain activity. To do this, we will be creating a **generalized linear mixed effects model (GLMM)** with a gamma distribution and **log** link function. This is because the distribution of the outcome power (which is a value representing averaged amplitudes within a frequency range/band) is positive and skewed to the right, which will produced skewed errors. A Gamma distribution can better fit our data. Additionally, the introduction of topographical regions as a factor requires subjects to have their own random intercept. This is because we may expect brain regions to be more similar to each other within a person than across- thus, this needs to be taken into account by introducing subjects as a random effect. 
+As mentioned, we are interested in how spelling performance may potentially influence electrical brain activity. To do this, we will be creating a **generalized linear mixed effects model (GLMM)** with a gamma distribution and **log** link function. This is because the distribution of the outcome power (which is a value representing averaged amplitudes within a frequency range/band squared) is positive and skewed to the right, which will produced skewed residuals. A Gamma distribution can better fit our data. Additionally, the introduction of topographical regions as a factor requires subjects to have their own random intercept. This is because we may expect brain regions to be more similar to each other within a person than across- thus, this needs to be taken into account by introducing subjects as a random effect. 
 
 The log link part is important and different from a logit link. The similarity is that exp() is used to represent these values into a number that is easier to understand. For the 'log' link, exp() converts it into a **raw score**- so in a way, it seems that exp() estimates is like turned them back into regular estimates that can be interpreted linearly (as one unit increase we expect this increase for the outcome) instead of as a probability. This is information obtain from ChatGPT.
 
@@ -314,108 +405,151 @@ Model 4: Complex model with interactions (Spelling Error x Age)
 Model 5: Complex model with interactions (Spelling Error x Topography)
 Model 6: A very complex model with interactions (Spelling Error x Topography X Age)
 
-Model 6 is the best fit, however, its main effects indicated that the complex interactions were not significant- thus, right now we will be further exploring model 4 and model 5 since both were better than model 3 and had interaction effects.
 
+### Comparing delta models
 
 ```{r running the analyses, out.width  = "49%"}
+# Create a list to hold the model outputs
+mods0 <- list()
+mods1 <- list()
+mods2 <- list()
+mods3 <- list()
+mods4 <- list()
+mods5 <- list()
+mods6 <- list()
+
+for (ii in 1:length(FBdat)) {
+tic()
 # Creating the models
-mod0 <- glmer(Power ~ 1 + (1|ID), data = data4, 
+mods0[[ii]] <- glmer(Power ~ 1 + (1|ID), data = FBdat[[ii]], 
             family = Gamma(link = "log")) 
 
-# Print the icc
-icc(mod0)
 
-mod1 <- glm(Power ~ Age + (1|ID), data = data4, 
-            family = Gamma(link = "log")) # Age was the only significant predictor (not IQ, group, Sex)
+# Create the six models
+mods1[[ii]] <- glmer(Power ~ Age_z + (1|ID), 
+                     data = FBdat[[ii]], 
+                     family = Gamma(link = "log"))
 
-mod2 <- glm(Power ~ Age + Topography + (1|ID), data = data4, 
-            family = Gamma(link = "log"))
+mods2[[ii]] <- glmer(Power ~ Age_z + Topography + (1|ID), 
+                     data = FBdat[[ii]], 
+                     family = Gamma(link = "log"))
 
-mod3 <- glm(Power ~ Age + Topography + Total_SpellingError + (1|ID), data = data4, 
-            family = Gamma(link = "log"))
+mods3[[ii]] <- glmer(Power ~ Age_z + Topography  + Total_SpellingError_z + (1|ID), 
+                     data = FBdat[[ii]], 
+                     family = Gamma(link = "log"))
 
-mod4 <- glm(Power ~ Age + Topography * Total_SpellingError + (1|ID), data = data4, 
-            family = Gamma(link = "log"))
+mods4[[ii]] <- glmer(Power ~ Age_z + Topography + Age_z*Total_SpellingError_z + (1|ID), 
+                     data = FBdat[[ii]], 
+                     family = Gamma(link = "log"))
 
-mod5 <- glm(Power ~ Age * Total_SpellingError + Topography  + (1|ID), data = data4, 
-            family = Gamma(link = "log"))
+mods5[[ii]] <- glmer(Power ~ Age_z + Topography + Age_z*Total_SpellingError_z + Topography*Total_SpellingError_z + (1|ID),
+                     data = FBdat[[ii]], 
+                     family = Gamma(link = "log"),
+                     control = glmerControl(optimizer = "bobyqa", optCtrl = list(maxfun = 1500000)))
 
-mod6 <- glm(Power ~ Age * Topography * Total_SpellingError + (1|ID), data = data4, 
-            family = Gamma(link = "log"))
+mods6[[ii]] <- glmer(Power ~ Age_z * Total_SpellingError_z * Topography + (1|ID), 
+                     data = FBdat[[ii]], 
+                     family = Gamma(link = "log"),
+                     control = glmerControl(optimizer = "bobyqa", optCtrl = list(maxfun = 1500000)))
+toc()
 
-
-# Creating the Guassian counterpart to compare distribution of the errors
-mod4_guassian <- glm(Power ~ Age + Topography * Total_SpellingError + (1|ID), data = data4, 
-            family = gaussian(link = "identity"))
-
-mod5_guassian <- glm(Power ~ Age * Total_SpellingError + Topography  + (1|ID), data = data4, 
-            family = gaussian(link = "identity"))
-
+}
 
 # model comparison results
-anova(mod0, mod1, mod2, mod3, mod4, mod6, test = "Chisq")
-anova(mod0, mod1, mod2, mod3, mod5, mod6, test = "Chisq")
+modcomp <- list()
+
+for(ii in 1:length(FBdat)) {
+modcomp[[ii]] = do.call(anova, c(mods0[[ii]], mods1[[ii]], mods2[[ii]], mods3[[ii]], mods4[[ii]], mods5[[ii]], mods6[[ii]], list(test = "Chisq")))
+
+}
+
+# Give the modeloutput names
+names(modcomp) <- c("delta", "theta", "alpha", "beta")
+
+# Print out the model comparisons
+modcomp
+```
+
+
+
+
+## Model comparison interpretation
+
+As mentioned, eight models were compared. These models were nested, meaning each more complex model builds on a simpler one by adding predictors. This allows us to assess whether each predictor meaningfully improves model fit. If adding a predictor does not significantly improve the model (suggesting no main effect or a weak effect size), but an interaction involving that predictor is significant, then that would suggest that variance can be better explain by introducing that predictor after all to create the interaction!
+
+Using the `anova()` function, we are able to get several model fit statistics.
+
+- **Number of free parameters (npar)**: This is a measurement of model complexity- the larger the number the more complex the model is. A rule of thumb is to not have between 10-20 observations for each parameter in the model. Since I have a sample size of 449 subjects, having a npar value around 20 is very reasonable. 
+
+- **Akaike Information Criterion (AIC)**: A value where the lower it is the better the model fit. Penalizes models for being too complex. 
+
+- **Bayesian Information Criterion (BIC)**: This is similar to AIC but penalizes complex models to a stronger degree. A smaller number also indicates a better fitting model.  
+
+- **logLik**: A less negative value indicates better fit
+
+- **deviance**: How much the model deviates from a perfect fit. A lower deviance is better.
+
+- **Chisq**: a chi-square test. A higher chi-square means the added predictors improved the model. 
+
+- **Df**: The number of additional parameters in the more complex model compared to the simpler one
+
+- **Pr**: The p-value of the chi-square test. 
+
+
+**Model 6** is the best:
+
+Which Model is Best?
+We compare models based on AIC, BIC, and significance tests to find a good balance between fit and complexity. We see that **mod8** fits the best because it has lowest AIC (22879), lowest BIC (23023), lowest deviance (22837) and a Chi-square test indicates it is a significantly better model than the previous model, but really tahn all those that came before it. 
+
+
+### Model 8 Main Effects
+
+```{r lets explore the main effects of our best fitting model}
+# Report the main effects using type III Sums os Squares
+Anova(mods6[[1]], type ="III")
+Anova(mods6[[2]], type ="III")
+Anova(mods6[[3]], type ="III")
+Anova(mods6[[4]], type ="III")
+
+```
+
+We see here that everything is significant. One may think to adjust the p-values here- to control for multiple comparison. I will not be doing that for a couple of reasons.
+
+1. Multiple comparison for me makes the most sesne when controlling for the comparisons between levels of a factor- this is not
+the case here in this example.
+
+2. Using model comparison we know already that this model is good- so introducing a p-value adjustment would turn this model back
+into an inferior one.
+
+3. I am like 80% sure Dr. Francis mentioned we did not have to do p-value adjusments here. 
+
+
+### Investigating the interactions
+
+```{r investigating the interactions}
+library(interactions)
+interact_plot(mods6[[1]], pred = "Age_z", modx = "Total_SpellingError_z", mod2 = "Topography")
+interact_plot(mods6[[2]], pred = "Age_z", modx = "Total_SpellingError_z", mod2 = "Topography")
+interact_plot(mods6[[3]], pred = "Age_z", modx = "Total_SpellingError_z", mod2 = "Topography")
+interact_plot(mods6[[4]], pred = "Age_z", modx = "Total_SpellingError_z", mod2 = "Topography")
+```
+
+
+
+
+### Comparing Gamma vs Gaussian
+
+
+```{r plotting residuals of gamma and gaussian}
+# Creating the Guassian counterpart to compare distribution of the errors
+mod8_guassian <- glm(Power ~  Topography + FreqBand * Age_z * Total_SpellingError_z + (1|ID), data = data4, 
+            family = gaussian(link = "identity"))
 
 # Plotting the residuals
-qqnorm(resid(mod4))
-qqline(resid(mod4))
-qqnorm(resid(mod5))
-qqline(resid(mod5))
-qqnorm(resid(mod4_guassian))
-qqline(resid(mod4_guassian))
-qqnorm(resid(mod5_guassian))
-qqline(resid(mod5_guassian))
+qqnorm(resid(mod8))
+qqline(resid(mod8))
+hist(resid(mod8))
+qqnorm(resid(mod8_guassian))
+qqline(resid(mod8_guassian))
+hist(resid(mod8_guassian))
 ```
-
-
-## Identifying and removing outliers
-
-While the Gamma Log Link functions models look better at handling the EEG data than guassian, we still see that there can be some improvement. Thus, we will now check using cook's distance if there are any outliers in the data, and if so to remove them. 
-
-We will be doing this for both mod4 and mod5
-
-```{r identifying outliers using cooks distance, out.width = "49%"}
-# Remove outliers using cook's distance 
-N = length(unique(data4$ID))
-k = length(coef(mod4)) - 1 # 8 unique predictors
-
-# Calculate cooks distance
-cooks_mod4 <- cooks.distance(mod4)
-
-# Identify influential cases 4/(N-k-1)
-influential_mod4 <- which(cooks_mod4 > (4 / (N - k - 1))) 
-
-# Remove the influential cases from the data
-data4_1 <- data4[-influential_mod4, ]
-
-
-### Repeate for model 5
-# Remove outliers using cook's distance 
-N = length(unique(data4$ID))
-k = length(coef(mod5)) - 1 # 8 unique predictors
-
-# Calculate cooks distance
-cooks_mod5 <- cooks.distance(mod5)
-
-# Identify influential cases 4/(N-k-1)
-influential_mod5 <- which(cooks_mod5 > (4 / (N - k - 1))) 
-
-# Remove the influential cases from the data
-data4_2 <- data4[-influential_mod5, ]
-
-
-## Rerun the models
-mod4_2 <- glm(Power ~ Age + Topography * Total_SpellingError, data = data4_1, 
-            family = Gamma(link = "log"))
-
-mod5_2 <- glm(Power ~ Age * Total_SpellingError + Topography , data = data4_2, 
-            family = Gamma(link = "log"))
-
-## Check the distribution of the residuals
-qqnorm(resid(mod4_2))
-qqline(resid(mod4_2))
-qqnorm(resid(mod5_2))
-qqline(resid(mod5_2))
-
-```
-
