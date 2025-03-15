@@ -30,6 +30,8 @@ library(car) # To calculate VIF
 library(performance) # ICC 
 library(lme4) #glmer
 library(interactions) # interact_plot
+library(emmeans)
+library(effects) #plot(allEffects(model))
 ```
 
 ### Load in our data
@@ -45,107 +47,388 @@ ARFA <- read.csv("ARFA/ARFA.Spelling.Errors.Scored.csv")
 CFIT <- read.csv("CFIT/CFIT.scores.csv")
 fftx <- read.csv("EEG/rsEEG/topographyFBAvgPowFFT.csv")
 welchx <-  read.csv("EEG/rsEEG/topographyFBAvgPowWelch.csv")
-
+eeg_qs <- read_excel("EEG/rsEEG/Wet_EEG_Cleaning_Final_Report.xlsx")
+eeg_mismatch <- read_excel("EEG/rsEEG/MegaGrant_TBL.xlsx")
+Medical <- read_excel("Medical_History/TBL_WHOQOL_BRIEF_Medical_S1_S3_DM_06.xlsx",  sheet = "med s1")
 
 # Data cleaning
 CFIT <- select(CFIT, ID, IQRS = Raw.Scores)
-ARFA <- select(ARFA, ID, Total_SpellingError)
+ARFA <- select(ARFA, ID, TSE = Total_SpellingError)
 demo <- demo %>%
-  select(ID, 
+  select(S1 = `S1 reg-list`,
+         ID, 
          Sex, 
          Age, 
          Group) %>%
   mutate(ID = as.numeric(ID),
          Age = as.numeric(Age)) 
+eeg_qs <- select(eeg_qs, File_Name, Start_Recording_Sec, Percent_Remaining, EEG_Rank2, Interpolated_Chan_Num )
+eeg_mismatch <- select(eeg_mismatch, ID, RAW)
+Medical2 <- select(Medical, ID, HeadTrauma, Health2epilepsy, Health2autism, ADD, Dislexia)
+
+# Create an exclusion variable
+Medical2 <- Medical2 %>%
+  mutate(Traum_Epi_Tism_ADD_Dys = case_when(
+    HeadTrauma == "Y" | Health2epilepsy == "Y" | Health2autism == "Y" | 
+    ADD == "Y" | Dislexia == "Y" ~ "Y",
+    TRUE ~ "N"
+  ))
+
 
 # EEG data cleaning
 fftx$ID <- as.numeric(gsub("\\D", "",  sapply(str_split(fftx$filename,"_"), function(x) x[1])))
 welchx$ID <- as.numeric(gsub("\\D", "",  sapply(str_split(welchx$filename,"_"), function(x) x[1])))
+fftx$Condition <- ifelse(grepl("Close", fftx$filename),"Closed","Open")
+welchx$Condition <- ifelse(grepl("Close", welchx$filename),"Closed","Open")
 fftx <- select(fftx, -filename)
 welchx <- select(welchx, -filename)
-names(fftx) <- c(paste0(names(fftx)[1:(length(fftx)-1)],"_fftx"),"ID")
-names(welchx) <- c(paste0(names(welchx)[1:(length(fftx)-1)],"_welchx"),"ID")
+names(fftx) <- c(paste0(names(fftx)[1:(length(fftx)-2)],"_fftx"),"ID", "Condition")
+names(welchx) <- c(paste0(names(welchx)[1:(length(fftx)-2)],"_welchx"),"ID", "Condition")
 
+
+# EEG QS cleaning
+eeg_qs$Condition <- ifelse(grepl("Close", eeg_qs$File_Name),"Closed","Open")
+eeg_qs$ID <- as.numeric(gsub("\\D", "", sapply(str_split(eeg_qs$File_Name,"_"), function(x) x[1])))
+eeg_qs <- select(eeg_qs, -File_Name)
+eeg_mismatch$ID <- as.numeric(eeg_mismatch$ID)
+eeg_mismatch$RAW <- as.numeric(eeg_mismatch$RAW)
 
 ### Combine the dataset into one
 data <- demo %>%
   full_join(CFIT, by = "ID") %>%
   full_join(ARFA, by = "ID") %>%
-  full_join(fftx, by = "ID") %>%
-  full_join(welchx, by = "ID")
+  full_join(Medical2, by = "ID") %>%
+  full_join(eeg_mismatch, by = "ID") %>%
+  full_join(eeg_qs, by = "ID") %>%
+  full_join(fftx, by =  c("ID","Condition")) %>%
+  full_join(welchx, by =  c("ID","Condition"))
+
+# Drop any NA's from the following variables
+data <- drop_na(data, ID)
+data <- drop_na(data, Condition)
+
+
+# Keep only unique instances
+data <- unique(data)
+
+# Any duplicates? (no duplicates)
+dup <- data %>%
+  group_by(ID) %>%
+  summarise(duplicates = n())
+
+cat("There are:",sum(dup$duplicates>2),"duplicates in the data")
 ```
 
 
-### Index subjects by those that met the requirements
+### Addressing Issue with rsEEG file names
+
+- Some RAW files have mismatching names with IDs.
+- On closer inspection there seems to be no issues after all. 
+
+```{r addressing rsEEG name issue}
+# Select ID and RAW
+datt <- select(data, ID, RAW)
+
+# Identify which files are mismatched
+datt <- datt %>%
+  mutate(mismatch = ifelse(ID != RAW, "Mismatch", "-"))
+
+```
+
+
+### Keep only participants from Study 1
+
+- Some of these data may be from Study 3. We do not want them in our sample. 
+
+```{r keep only study 1 participants}
+data <- data %>%
+  filter(S1 == "+")
+```
+
+
+### Converting data to wide format
+
+- Having eyes open and closed eeg data makes each subject have 2 rows.
+- We want all subjects to have one row- at least for now.
+
+```{r converting data to wide format}
+dataW <- data %>%
+  pivot_wider(names_from = Condition, values_from = c(Start_Recording_Sec:Interpolated_Chan_Num, frontal_absdelta_fftx:occipital_relbeta_welchx))
+
+```
+
+
+### Data Imputation
+
+- we will only be doing this for our predictor of interest 'TSE'
+- The code below is copied and pasted directly from **deepseek**
+- We are doing this mainly to have functional model comparisons later one- realistically we don't need to do this when using mixed models. 
+- **Explanation**: The MICE (Multiple Imputation by Chains Equations) algorithm is able to detect all missing values within a dataset (default) or variable (if we mess with the code). It then generates **multiple complete datasets** (we set it to 5) where the missing values for TSE get imputed (guessed). The imputed values in each dataset are slightly different because they are drawn from a distribution. We specified the **pmm** method (predictive mean matching), which predicts missing values using a regression model- but this regression model **does not** have to be linear. This is because MICE uses **chained equations**, so it can model each variable according to its own distribution and how this relates to other variables. Overall it created 5 complete datasets with the imputed values and I chose the first one. 
+
+```{r data imputation}
+library(mice)
+set.seed(123)
+
+# Creates a matrix where all values are 1 off the zero- this means all values can be predicted in the dataset
+pred_matrix <- make.predictorMatrix(dataW)
+
+# Change this matrix so only 1's are present in the TSE and IQRS columns- therefore only these variables will be predicted from every other variable in the model.
+pred_matrix[, -which(colnames(dataW) %in% c("TSE", "IQRS"))] <- 0
+
+# Indicate which columns (the ones with "TSE" and "IQRS") will go through 'pmm', which means to be predicted
+method_vector <- rep("", ncol(dataW))
+method_vector[which(colnames(dataW) %in% c("TSE", "IQRS"))] <- "pmm"
+
+# Step 3: Run MICE
+imputed_data <- mice(dataW, predictorMatrix = pred_matrix, method = method_vector, m = 5)
+
+# Step 4: Extract the completed dataset
+data_imputed <- complete(imputed_data, 1)  # Use the first imputed dataset
+
+```
+
+
+
+```{r ADD and spelling ability}
+# This justifies we can remove ADD 
+dataW %>%
+  ggplot(aes(x = ADD, y = TSE)) +
+  geom_boxplot()
+
+```
+
+### Remove subjects that do not meet criteria
 
 - No self-report injury
 - No Epilepsy
+- No ADD
+- No dyslexia
 - Removing missing data
-- No one below 'IQ' of 70 (more than 2 SD below the mean)
+- No one below 2 sd below the mean of a non verbal IQ measure
 - Extremely poor spellers (more than 3 SD below the mean)
-- Issues with EEG recordings
-- Did not survive EEG cleaning
+- Too old compared to average (more than 3 Sd from the mean)
+- **Note**: Calculate z-scores must be done before removing any IDs from the dataset and must be done within conditions!
+
 
 
 ```{r keep non rejects subjects}
-# Set the working directory
-setwd(Mega)
+# Indicate our starting sample size
+cat("We are starting out with",length(unique(dataW$ID)),"unique ids that have at least one eyes open/closed rsEEG recording\n")
+nrow(dataW)
 
-# Load in the final sample data
-Final_Sample_Size <- read_excel("EEG/rsEEG/Final.Sample.Size.xlsx")
+# Express how many subjects are being removed for injury, epilepsy, or autism
+cat("We are removing",sum(dataW$Traum_Epi_Tism_ADD_Dys == "Y", na.rm = T),"participants for having head trauma, epilepsy, autism, ADD, or dyslexia \n")
+dataW2 <- dataW %>% filter(Traum_Epi_Tism_ADD_Dys != "Y" | is.na(Traum_Epi_Tism_ADD_Dys))
+nrow(dataW2)
 
-# Index the data by the IDs in the final sample size
-data2 <- data %>%
-  filter(ID %in% Final_Sample_Size$ID)
+# Print a table of this for fine grain information
+Traum_Epi_Tism_ADD_Dys_T = select(dataW, ID, HeadTrauma:Traum_Epi_Tism_ADD_Dys) %>%
+  filter(Traum_Epi_Tism_ADD_Dys == "Y") %>%
+  select(-Traum_Epi_Tism_ADD_Dys)
+
+# Clean the table a bit (convert NAs into N)
+Traum_Epi_Tism_ADD_Dys_T[is.na(Traum_Epi_Tism_ADD_Dys_T)] <- "N"
+
+# Filter out one by one
+headtraumaIDs = Traum_Epi_Tism_ADD_Dys_T$ID[Traum_Epi_Tism_ADD_Dys_T$HeadTrauma == "Y"]
+cat(length(headtraumaIDs), "have head trauma")
+Traum_Epi_Tism_ADD_Dys_T <- filter(Traum_Epi_Tism_ADD_Dys_T, !(ID %in% headtraumaIDs))
+
+epilepsyIDs = Traum_Epi_Tism_ADD_Dys_T$ID[Traum_Epi_Tism_ADD_Dys_T$Health2epilepsy == "Y"]
+cat(length(epilepsyIDs), "have epilepsy")
+Traum_Epi_Tism_ADD_Dys_T <- filter(Traum_Epi_Tism_ADD_Dys_T, !(ID %in% epilepsyIDs))
+
+tismIDs = Traum_Epi_Tism_ADD_Dys_T$ID[Traum_Epi_Tism_ADD_Dys_T$Health2autism == "Y"]
+cat(length(tismIDs), "have autism")
+Traum_Epi_Tism_ADD_Dys_T <- filter(Traum_Epi_Tism_ADD_Dys_T, !(ID %in% tismIDs))
+
+ADDIDs = Traum_Epi_Tism_ADD_Dys_T$ID[Traum_Epi_Tism_ADD_Dys_T$ADD == "Y"]
+cat(length(ADDIDs), "have ADD")
+Traum_Epi_Tism_ADD_Dys_T <- filter(Traum_Epi_Tism_ADD_Dys_T, !(ID %in% ADDIDs))
+
+dyslexiaIDs = Traum_Epi_Tism_ADD_Dys_T$ID[Traum_Epi_Tism_ADD_Dys_T$Dislexia == "Y"]
+cat(length(dyslexiaIDs), "have dyslexia")
+Traum_Epi_Tism_ADD_Dys_T <- filter(Traum_Epi_Tism_ADD_Dys_T, !(ID %in% dyslexiaIDs))
+
+
+# Transform back to long (by condition)- must do this to keep the imputed TES scores!
+data2 <- filter(data, ID %in% dataW2$ID)
+
+# IMPUTE THE TES VALUES BACK INTO THE ('long format') dataset
+data2 <- data2 %>%
+  left_join(select(data_imputed, ID, TSEi = TSE, IQRSi = IQRS), by ="ID") %>%
+  select(-c(TSE,IQRS)) %>%
+  rename(TSE = TSEi, IQRS = IQRSi)
+
+# Obtain the zscores of IQRS, TSE, Age (this must happen first!)
+data2 <- data2 %>%
+  group_by(Condition) %>%
+  mutate(Agez = c(scale(Age)),
+         IQRSz = c(scale(IQRS)),
+         TSEz = c(scale(TSE)))
+
+# Remove subjects for have low nonverbal IQ performance (less than 2 SD)
+data3 <- filter(data2, IQRSz > -2 | is.na(IQRSz))
+cat("We have", length(unique(data3$ID)),"participants after removing those that performed less than 2 standard deviations below the mean of a non verbal IQ measure\n")
+
+# Remove extremely poor spellers
+data4 <- filter(data3, TSEz > -3 | is.na(TSEz))
+cat("We have", length(unique(data4$ID)),"participants after removing those that had spelling errors above 3 SD of the mean\n")
+
+# Remove any very old people
+data5 <- filter(data4, Agez < 3 | is.na(TSEz))
+cat("We have ",length(unique(data5$ID)),"participants after removing those that were 3 SD above the mean in age\n")
+
+# Report the number of unique IDs we have left
+cat("This leaves us with data from",length(unique(data5$ID)),"participants with at least one rsEEG recording\n")
 
 ```
+### Early Demographics
+
+The demographics before we removed bad EEG recordings
+
+```{r initial demographics info}
+# Convert to wide
+data5w <- data5 %>%
+  group_by(ID) %>%
+  summarize(Age = mean(Age),
+            Sex = Sex[1],
+            Group = Group[1])
+
+describe(data5w$Age)
+round(prop.table(table(data5w$Sex)),2)
+table(data5w$Group)
+
+```
+
+
+
+
+### Converting data to long (Conditions)
+
+- Now that we know what our potential sample size is, we need to convert the data to long to remove rows (condition info) where the EEG is not usable. We are not going to transform our 'Wide' dataset to long- that would be silly. Instead we are going back to our origina 'data' object and removing ID's that did not survive from the previous exclusion section
+- Excluding not usable rsEEG files
+
+
+#```{r converting data to long}#
+# Remove variables we no longer carefor
+data6 <- select(data5, -c(S1, HeadTrauma, Health2epilepsy, Health2autism, Traum_Epi_Tism_ADD_Dys, RAW, ADD, Dislexia))
+
+# Create two different datasets
+Open <- filter(data6, Condition == "Open")
+Closed <- filter(data6, Condition == "Closed")
+
+# See how many EEG files we have for each condition
+cat("We have",nrow(Open),"recordings for Eyes Open\n")
+cat("We have",nrow(Closed),"recordings for Eyes Closed\n")
+
+# Set thresholds for removing bad EEG recordings after segmentation rejection
+EEG_threshold = .7
+Open2 <- filter(Open, Percent_Remaining >= EEG_threshold)
+Closed2 <- filter(Closed, Percent_Remaining >= EEG_threshold)
+
+cat("We have",nrow(Open2),"recordings for Eyes Open after removing recordings without not enough rsEEG data after seg rejec.\n")
+cat("We have",nrow(Closed2),"recordings for Eyes Closed after removing recordings without not enough rsEEG data after seg rejec.\n")
+
+# Set threshold for removing EEG recordings with too many interpolated channels
+Interp_threshold = 6
+Open2.5 <- filter(Open2, Interpolated_Chan_Num <= Interp_threshold)
+Closed2.5 <- filter(Closed2, Interpolated_Chan_Num <= Interp_threshold)
+
+cat("We have",nrow(Open2.5),"recordings for Eyes Open after removing recordings with more than 6 interpolated channels.\n")
+cat("We have",nrow(Closed2.5),"recordings for Eyes Closed after removing recordings with more than 6 interpolated channels.\n")
+
+# Set threshold for removing bad EEG recordings after low ranking
+EEG_rankThreshold = median(Open$EEG_Rank2) * .7
+Open3 <- filter(Open2.5, EEG_Rank2 >= EEG_rankThreshold)
+Closed3 <- filter(Closed2.5, EEG_Rank2 >= EEG_rankThreshold)
+
+cat("We have",nrow(Open3),"recordings for Eyes Open after removing low rank EEG after preprocessing.\n")
+cat("We have",nrow(Closed3),"recordings for Eyes Closed after removing low rank EEG after preprocessing.\n")
+
+
+
+```{r converting data to long2}
+# Remove variables we no longer carefor
+data6 <- select(data5, -c(S1, HeadTrauma, Health2epilepsy, Health2autism, Traum_Epi_Tism_ADD_Dys, RAW, ADD, Dislexia))
+
+# We must create a dataset for eyes open and eyes closed respectively
+eyesOpen <- filter(data6, Condition == "Open")
+eyesClosed <- filter(data6, Condition == "Closed")
+
+# See how many EEG files we have for each condition
+cat("We have",length(unique(eyesOpen$ID))," unique IDs for eyes open\n")
+cat("We have",length(unique(eyesClosed$ID))," unique IDs for eyes closed\n")
+
+# Set thresholds for removing bad EEG recordings after segmentation rejection
+EEG_threshold = .7
+eyesOpen2 <- filter(eyesOpen, Percent_Remaining >= EEG_threshold)
+eyesClosed2 <- filter(eyesClosed, Percent_Remaining >= EEG_threshold)
+
+cat("We have",length(unique(eyesOpen2$ID))," eyes-open recordings after removing recordings without not enough rsEEG data after seg rejec.\n")
+cat("We have",length(unique(eyesClosed2$ID)),"eyes-closed recordings after removing recordings without not enough rsEEG data after seg rejec.\n")
+
+# Set threshold for removing EEG recordings with too many interpolated channels
+Interp_threshold = 6
+eyesOpen3 <- filter(eyesOpen2, Interpolated_Chan_Num <= Interp_threshold)
+eyesClosed3 <- filter(eyesClosed2, Interpolated_Chan_Num <= Interp_threshold)
+
+cat("We have",length(unique(eyesOpen3$ID)),"eyes-open recordings  after removing recordings with more than 6 interpolated channels.\n")
+cat("We have",length(unique(eyesClosed3$ID)),"eyes-closed recordings  after removing recordings with more than 6 interpolated channels.\n")
+
+
+# Set threshold for removing bad EEG recordings after low ranking
+EEG_rankThreshold = median(data6$EEG_Rank2) * .7
+eyesOpen4 <- filter(eyesOpen3, EEG_Rank2 >= EEG_rankThreshold)
+eyesClosed4 <-  filter(eyesClosed3, EEG_Rank2 >= EEG_rankThreshold)
+
+cat("We have",length(unique(eyesOpen4$ID)),"eyes-open recordings  after removing low rank EEG after preprocessing.\n")
+cat("We have",length(unique(eyesClosed4$ID)),"eyes-closed recordings  after removing low rank EEG after preprocessing.\n")
+
+```
+### Final Demographic for our final datasets
+
+```{r final demographics}
+describe(eyesOpen4$Age)
+round(prop.table(table(eyesOpen4$Sex)),2)
+table(eyesOpen4$Group)
+
+
+describe(eyesClosed4$Age)
+round(prop.table(table(eyesClosed4$Sex)),2)
+table(eyesClosed4$Group)
+
+```
+
+
 
 
 ### Missing data
 
-- All data should be present based on the index from the previous section
+- Shows the number of missing data for each condition
+- Since we are using mixed-models- this does not matter that much unless it is EEG data
 
 
 ```{r reporting missing data part 1,  results= 'asis', echo = FALSE}
-cat("This is an automated response: The current dataset has the dimensions",paste(dim(data2), collapse = " x "),". Below is a frequency table showing the number of missing data for each variable.")
+# Check NA's for eyes open dataset
+data.frame(lapply(data9, function(x) sum(is.na(x)))) %>%
+  stack() %>%
+  select(EyesOpen_Vars = ind, MissingNum = values)
 
-# Create a dataframe of missing data
-Missing.data.df <- cbind(colSums(is.na(data2))) %>%
-  data.frame(Missing.Num = .)
-
-# Add More variables of interest
-Missing.data.df$Remaining.Num = nrow(data) - Missing.data.df$Missing.Num
-Missing.data.df$Remaning.Per = round(Missing.data.df$Remaining.Num/nrow(data),3)*100
-
-# Add a variable indicating which type of data is missing
-Missing.data.df$data <- row.names(Missing.data.df)
-
-# Remove row names to reduce redundancy
-row.names(Missing.data.df) <- NULL
-
-# Print the table
-Missing.data.df %>%
-  select(data, Missing.Num, everything()) %>%
-  arrange(Missing.Num) %>% 
-  kbl() %>%  
-  kable_paper(full_width = F)
+# Check NA's for eyes closed dataset
+data.frame(lapply(data9, function(x) sum(is.na(x)))) %>%
+  stack() %>%
+  select(EyesClosed_Vars = ind, MissingNum = values)
 ```
 
 
-```{r reporting missing data part 2,  results= 'asis', echo = FALSE}
-cat("This is an automated response: Our final sample size is n=",length(unique(data2$ID)))
-
-```
 
 ## Research Question
-- We are interested in investigating spelling performance as a predictor of EEG activity. We hypothesize that spelling ability will result in differences in brain activity while controlling for covariates like Age, Group (Bio vs Ins), and topography. 
+- We are interested in investigating spelling performance/spelling error as a predictor of EEG activity. We hypothesize that spelling ability will result in differences in brain activity while controlling for covariates like Age, Group (Bio vs Ins), and topography. However, this is more exploratory since literature on this topic is mixed and I don't believe anyone has done this type of analysis on adults. Thus we will also include interactions to see if the relationship between spelling performance and EEG activity (average FB power) is moderated by other variables like age, or topography. 
 
+## Descriptive statistics of the data (Predictors)
 
-## Descriptive statistics of the data
-
-We can use the describe() function from the psych package to give us descriptive statistics from the variables that will be incorporated into the model. We will create 3 tables. The first will contain information about the continuous predictors. The next will have the frequency of the categorical variables. Lastly we will have a table for the resting-state EEG frequency bands. 
-
-We will be creating models for 4 differenet frequency bands (delta, theta, alpha, beta), thus, four datasets will be created where only information related to a specific frequency band are present.
+We can use the describe() function for the eyes open dataset and the eyes closed data set to get a field for what our central tendencies and distribution look like. Additionally we can plot the distributions of the scores. The added zscores to the descriptives show that we correctly removed scored that needed to be removed
 
 ### Descriptives of our data
 
@@ -154,35 +437,44 @@ We will be creating models for 4 differenet frequency bands (delta, theta, alpha
 options(scipen = 0)
 
 # Select continuous variables
-data2_cont <- data2 %>% select(ID, Age, IQRS, Total_SpellingError, frontal_avgdelta_fftx:occipital_avgbeta_welchx)
-
-data.frame(describe(data2_cont)) %>%
+data9 %>% 
+  filter(Condition != "Closed") %>%
+  mutate(Sex = ifelse(Sex == "F",1,0)) %>%
+  select(Age, Sex, IQRS, TSE, Agez, IQRSz, TSEz) %>%
+  describe() %>%
   round(3) %>%
   kbl() %>%
-  kable_minimal() 
+  kable_minimal(full_width = F)
 
-# Categorical information
-table(data2$Sex)
-table(data2$Group)
+# Show their distribution
+hist(data9$Age)
+hist(data9$IQRS)
+hist(data9$TSE)
+
 ```
 
 
-### FFT vs Pwelch
 
-- Let's compare the variance of power between FFT and Welch Method approach
-- Must fix issue with parietal data in fftx- right now the comparison is not meaningful
-- For right now we will conduct the rest of the analysis for Welch's Method
+### Pwelch Absolute Power, Power Spectral Density, Relative Power
+
+- Let's compare the variance of the three different power's (Power Type) from the Welch method
+- Let's compare them against condition (eyes open v eyes closed), topography, frequency band
+- We will separate them by Power type
 
 ```{r comparing variance of power between FFT and Welch Method}
+# Bind the eyes open and eyes closed for this
+Open_Closed <- rbind(Open3, Closed3)
+
 # Saving each type of EEG processing in their own datasets
-EEGfftx <- select(data2, ID, frontal_avgdelta_fftx:occipital_avgbeta_fftx)
-EEGWelchx <- select(data2, ID, frontal_avgdelta_welchx:occipital_avgbeta_welchx)
+EEGfftx <- select(Open_Closed, ID, frontal_abstheta_fftx:occipital_relbeta_fftx)
+EEGWelchx <- select(Open_Closed, ID, frontal_absdelta_welchx:occipital_relbeta_welchx)
 
 # Converting each to long
 EEGfftxL <- EEGfftx %>%
-  pivot_longer(-ID, names_to = "Var", values_to = "Power")
+  pivot_longer(-c(ID, Condition), names_to = "Var", values_to = "Power")
+
 EEGWelchx <- EEGWelchx %>%
-  pivot_longer(-ID, names_to = "Var", values_to = "Power")
+  pivot_longer(-c(ID, Condition), names_to = "Var", values_to = "Power")
 
 # Introduce more variables
 EEGfftxL <- EEGfftxL %>%
@@ -197,71 +489,58 @@ EEGWelchx <- EEGWelchx %>%
          Method = sapply(str_split(Var,"_"), function(x) x[3])) %>%
   select(-Var)
 
+# Split FB by absolute, relative and rel
+EEGfftxL <- EEGfftxL %>%
+  mutate(PowerType = substr(FreqBand, 1, 3),
+         FreqBand = gsub("abs|avg|rel","",FreqBand))
+
+EEGWelchx <- EEGWelchx %>%
+  mutate(PowerType = substr(FreqBand, 1, 3),
+         FreqBand = gsub("abs|avg|rel","",FreqBand))
+
 # Join them back together
 EEGfftxWelch <- EEGfftxL %>%
-  full_join(EEGWelchx, by = c("ID", "Topography", "FreqBand", "Method", "Power"))
+  full_join(EEGWelchx, by = c("ID", "Power", "Topography", "FreqBand", "Method", "Condition", "PowerType"))
 
-# Group the variables to create an accurate z-score
-EEGfftxWelch2 <- EEGfftxWelch %>%
-  group_by(Topography, FreqBand, Method) %>%
-  summarise(zscore = scale(Power))
+# Remove FFT for now since we do not care for it
+EEGfftxWelch <- EEGfftxWelch %>%
+  filter(Method != "fftx")
 
-# Create a comprehensive box plot of these data
-EEGfftxWelch2 %>%
-  ggplot(aes(x = Topography, y = zscore, fill = FreqBand)) +
+# Plot Absolute Power
+EEGfftxWelch %>%
+  filter(PowerType == "abs") %>%
+  ggplot(aes(x = Topography, y = Power ,fill = FreqBand)) +
   geom_boxplot() +
-  facet_grid(~Method)
+  facet_grid(~Condition) + 
+  coord_flip() +
+  labs(title = "Absolute Power Across Topography, FreqBand, and Condition")
 
-EEGfftxWelch3 <- EEGfftxWelch %>%
-  filter(Power < 10000) %>%
-  group_by(Topography, FreqBand, Method) %>%
-  summarise(zscore = scale(Power))
 
-# Create another boxplot removing that one outlier
-EEGfftxWelch3 %>%
-  ggplot(aes(x = Topography, y = zscore, fill = FreqBand)) +
+# Plot Power Spectral Density
+EEGfftxWelch %>%
+  filter(PowerType == "avg") %>%
+  ggplot(aes(x = Topography, y = Power, fill = FreqBand)) +
   geom_boxplot() +
-  facet_grid(~Method)
+  facet_grid(~Condition) + 
+  coord_flip() +
+  labs(title = "PSD Across Topography, FreqBand, and Condition")
+
+
+## Plot Relative Power
+EEGfftxWelch %>%
+  filter(PowerType == "rel") %>%
+  ggplot(aes(x = Topography, y = Power, fill = FreqBand)) +
+  geom_boxplot() +
+  facet_grid(~Condition) + 
+  coord_flip() +
+  labs(title = "Relative Power Across Topography, FreqBand, and Condition") 
+
+
 ```
 
 
+We will be creating models for 4 frequency bands (delta, theta, alpha, beta), thus, four datasets will be created where only information related to a specific frequency band are present for both **eyes open** and **eyes closed**. 
 
-### Visualizing all continuous variables as histograms (Z-scores)
-
-- This drives home the message that the outcome variable is highly skewed to the right in all possible combinations of FB and Topography.
-
-```{r visualize all variables as histograms, out.width= "33%"}
-# Removing fftx variables
-data3_cont <- data2_cont %>%
-  select(Age:Total_SpellingError, frontal_avgdelta_welchx:occipital_avgbeta_welchx)
-
-# Plot the histograms of all continuous variables
-histograms.list <- list()
-
-for(ii in 1:length(data3_cont)) {
-
-  # Save the current var into an object
-  current_var <- unlist(data3_cont[,ii])
-  
-  # Convert it into a z-score
-  current_var_z <- scale(current_var)
-
-  # Plot it
-  current_plot <- current_var_z %>%
-    data.frame(x=.) %>%
-      ggplot(aes (x = x)) +
-      geom_histogram(fill = "white",
-                     color = "black",
-                     bins = 20) +
-      labs(title = paste0(names(data3_cont[,ii]),"_z")) +
-      theme(plot.title = element_text(size = 14, hjust = 0.5)) +
-    theme_classic()
-
-  # Print out the plot
-  plot(current_plot)
-}
-
-```
 
 
 ### Testing for Multicollinearity
@@ -270,51 +549,62 @@ for(ii in 1:length(data3_cont)) {
 - Raw scores and total spelling error is kinda high but I think okay
 
 ```{r run a correlation matrix}
-cor(select(data3_cont, Age, IQRS, Total_SpellingError))
+# Ungroup these datasets
+Open3 <- ungroup(Open3)
+Closed3 <- ungroup(Closed3)
+
+# Run some correlations to check for multicollinearity
+Open3_noNa <- Open3 %>% filter(complete.cases(.))
+Closed3_noNa <- Closed3 %>% filter(complete.cases(.))
+
+round(cor(select(Open3_noNa, Age, IQRS, TSE)),3) %>%
+  kbl() %>%
+  kable_minimal(full_width = F)
+
+round(cor(select(Closed3_noNa, Age, IQRS, TSE)),3) %>%
+  kbl() %>%
+  kable_minimal(full_width = F)
 
 ```
 
 
-### Check for independence between categorical variables
-
-P-value is significant. It seems there are more females who were raised in biological families than males. This may not be as big of a deal as initially thought.  
-
-```{r run a chi square test}
-# Create a contingency table
-contingency.table <- table(select(data2, Sex, Group ))
-
-# Show the table with margins
-addmargins(contingency.table)
-
-# Obtain the proportions for each cell
-round(prop.table(contingency.table),3)
-
-# Run chi-square test
-chisq.test(contingency.table)
-```
 ### Preparing Data for Modeling
 
-We see here that the z-score distribution is larger, but that is highly likely to having power from different brain regions all in one vector AND frequency bands. We can confirm this with boxplots.
+I need to convert my datasets into long format so that each subject has a row for Topography and FreqBand combinations (16 rows)
 
 ```{r preparing data for modeling}
+#### Eyes Open
 # Converting the data into long format to isolate topography and FB
-data3 <- data2 %>%
-  select(ID:Total_SpellingError, frontal_avgdelta_welchx:occipital_avgbeta_welchx) %>%
-  pivot_longer(cols= c(frontal_avgdelta_welchx:occipital_avgbeta_welchx),
+Open3L <- Open3 %>%
+  select(ID:TSE, frontal_absdelta_welchx:occipital_relbeta_welchx, Agez:TSEz) %>%
+  pivot_longer(cols= c(frontal_absdelta_welchx:occipital_relbeta_welchx),
                names_to = "Var", values_to = "Power")
 
 # Separate 'name' into  two variables
-data3$Topography <- sapply(str_split(data3$Var, "_"), function(x) x[1])
-data3$FreqBand <- sapply(str_split(data3$Var, "_"), function(x) x[2])
-data3 <- select(data3, - Var)
+Open3L$Topography <- sapply(str_split(Open3L$Var, "_"), function(x) x[1])
+Open3L$FreqBand <- sapply(str_split(Open3L$Var, "_"), function(x) x[2])
+Open3L$PowerType <- substr(Open3L$FreqBand, 1,3)
+Open3L$FreqBand <- gsub("abs|avg|rel","", Open3L$FreqBand)
+Open3L <- select(Open3L, Condition, ID, Sex, Agez, TSEz, Power, Topography, FreqBand, PowerType)
 
-# Create a box plot to see brain activity across regions
-data3 %>%
-  ggplot(aes(x = FreqBand ,y= Power, color = Topography)) +
-  geom_boxplot() +
-  theme_classic() +
-  coord_flip()
 
+#### Eyes Closed
+# Converting the data into long format to isolate topography and FB
+Closed3L <- Closed3 %>%
+  select(ID:TSE, frontal_absdelta_welchx:occipital_relbeta_welchx, Agez:TSEz) %>%
+  pivot_longer(cols= c(frontal_absdelta_welchx:occipital_relbeta_welchx),
+               names_to = "Var", values_to = "Power")
+
+# Separate 'name' into  two variables
+Closed3L$Topography <- sapply(str_split(Closed3L$Var, "_"), function(x) x[1])
+Closed3L$FreqBand <- sapply(str_split(Closed3L$Var, "_"), function(x) x[2])
+Closed3L$PowerType <- substr(Closed3L$FreqBand, 1,3)
+Closed3L$FreqBand <- gsub("abs|avg|rel","", Closed3L$FreqBand)
+Closed3L <- select(Closed3L, Condition, ID, Sex, Agez, TSEz, Power, Topography, FreqBand, PowerType)
+
+
+# Experimentally testing df with both conditions within them
+Both_C <- rbind(Open3L, Closed3L) %>% ungroup()
 ```
 ### Running parallel processing
 
@@ -328,228 +618,448 @@ plan(multicore, workers = 12)  # Set number of workers (check your specs); use '
 
 
 
-### Another Multicollinearity Test (VIF on the model)
+
+### Save the EEG data by Power Type
+
+```{r save EEG data by Power Type}
+# Convert categorical variables into factors (Set up levels for plots)
+Both_C$Condition <- factor(Both_C$Condition, levels = c("Closed", "Open"))
+Both_C$Topography <- factor(Both_C$Topography, levels = c("frontal", "temporal", "parietal", "occipital"))
+Both_C$FreqBand <- factor(Both_C$FreqBand, levels = c("delta", "theta", "alpha", "beta"))
 
 
-A better approach to measure **multicollinearity** is by using the variance inflation factor. We can obtain this value by first running a model. We will run a model here with our main predictors of interest- not interactions will be used.
+# Split the data
+abs_df <- filter(Both_C, PowerType == "abs") %>% arrange(ID)
+psd_df <- filter(Both_C, PowerType == "avg") %>% arrange(ID)
+rel_df <- filter(Both_C, PowerType == "rel") %>% arrange(ID)
 
 
-```{r another multicollinearity test}
-# Center all continuous predictor- not needed now but will be important during interactions
-data3$Age_z <- c(scale(data3$Age))
-data3$Total_SpellingError_z <- c(scale(data3$Total_SpellingError))
-data3$IQRS_z <- c(scale(data3$IQRS))
-
-
-# Run the model with all potential main effects to be included
-tic()
-muticollinearity_mod <-  glmer(Power ~ Age_z + Sex + Group + IQRS_z + Total_SpellingError_z + Topography + FreqBand + (1|ID), data = data3, 
-                            family = Gamma(link = "log"))
-toc()
-
-# Obtain a vif score
-vif(muticollinearity_mod)
-
-```
-Looking at the **variance inflation factor (VIF)** of each predictor- there seems to be no multicollinearity so we are good to continue. 
-
-
-### Which Predictors to keep
-
-```{r identifying which predictors from above to keep}
-
-# Investigate the main effects
-Anova(muticollinearity_mod, type = "III")
-
-```
-Significant: Age_z, Topography, FreqBand
-
-Not-significant: Sex, Group, IQRS_c, Total_SpellingError_z
-
-Since Total_SpellingError_z is vital to the research question, it will remain as a predictor and then used for interactions with
-Age_z, Topography, and Frequency Band. 
-
-### Having Frequency Band as a Factor or an Outcome?
-
-In a perfect world, it would make sense to have Frequency Band as a Factor in the model for a few reasons. At face value, it is another predictor added to the model which could explain the variance of the outcome and we can use it to test higher order interactions. Thus, it has the opportunity to provides a wealth of information. There are however serious problems with having frequency bands as predictor. The model already has three predictors and in order to test our research question fully, then we would have to create a 4 way-interaction. This is problematic because it overcomplicated the model by a large margin and we do not have the sample size to be able to investigate it thoroughly. We have 449 observations, thus the rule of thumb is we should have one predictor for every 10-20 observations in our data. A 4-way interaction produces 66 free parameters, which is way more than we can handle. Also, when we plotted the data a few sections back, we saw that the variance of power was similar within frequency bands but highly differed across frequency bands- this could cause potential problems in our model and violated the assumption of heterogeneity. Lastly, if we create four models, each predicting their respective frequency band power outcome, then we could use three-way interactions and just compare trends of them in post without needing to use statistics. 
-
-```{r splitting the data by frequency band}
-# Remove uncentered predictors (QC)
-data4 <- select(data3, -c(Age,Total_SpellingError ))
-
-# Create a dataset for each FrequencyBand
-delta <- filter(data4, FreqBand == "avgdelta")
-theta <- filter(data4, FreqBand == "avgtheta") 
-alpha <- filter(data4, FreqBand == "avgalpha")
-beta <- filter(data4, FreqBand == "avgbeta")
-
-# Put these datasets into a list
-FBdat <- list(delta, theta, alpha, beta)
 ```
 
 
-### Running our models
+### Display the distribution of the outcomes
 
-As mentioned, we are interested in how spelling performance may potentially influence electrical brain activity. To do this, we will be creating a **generalized linear mixed effects model (GLMM)** with a gamma distribution and **log** link function. This is because the distribution of the outcome power (which is a value representing averaged amplitudes within a frequency range/band squared) is positive and skewed to the right, which will produced skewed residuals. A Gamma distribution can better fit our data. Additionally, the introduction of topographical regions as a factor requires subjects to have their own random intercept. This is because we may expect brain regions to be more similar to each other within a person than across- thus, this needs to be taken into account by introducing subjects as a random effect. 
+```{r distribution of the outcome}
+abs_df %>%
+  ggplot(aes(x = Topography, y = Power, fill = FreqBand)) +
+  facet_grid(~Condition) +
+  coord_flip() +
+  geom_boxplot() +
+  theme(
+    axis.title.x = element_text(size = 18),  # Increase x-axis title size
+    axis.title.y = element_text(size = 18),   # Increase y-axis title size
+    strip.text = element_text(size = 16)
+  )
 
-The log link part is important and different from a logit link. The similarity is that exp() is used to represent these values into a number that is easier to understand. For the 'log' link, exp() converts it into a **raw score**- so in a way, it seems that exp() estimates is like turned them back into regular estimates that can be interpreted linearly (as one unit increase we expect this increase for the outcome) instead of as a probability. This is information obtain from ChatGPT.
+psd_df %>%
+  ggplot(aes(x = Topography, y = Power, fill = FreqBand)) +
+  facet_grid(~Condition) +
+  coord_flip() +
+  geom_boxplot() +
+  theme(
+    axis.title.x = element_text(size = 18),  # Increase x-axis title size
+    axis.title.y = element_text(size = 18),   # Increase y-axis title size
+    strip.text = element_text(size = 16)
+  )
 
+rel_df %>%
+  ggplot(aes(x = Topography, y = Power, fill = FreqBand)) +
+  facet_grid(~Condition) +
+  coord_flip() +
+  geom_boxplot() +
+  theme(
+    axis.title.x = element_text(size = 18),  # Increase x-axis title size
+    axis.title.y = element_text(size = 18),   # Increase y-axis title size
+    strip.text = element_text(size = 16)
+  )
 
-We will use model comparison to see which model would be the best to interpret- however, if the model of best fit is too difficulty/complex, then we may chose the second best model.
-
-Model 0: Empty model with power as the outcome
-Model 1: A model with the covariates: They will also go through model comparison to pick the best coviarate model
-Model 2: A model with the chosen covariates and Topography
-Model 3: A model with the chosen covariates, Topography, and the predictor of interest (Spelling Error)
-Model 4: Complex model with interactions (Spelling Error x Age)
-Model 5: Complex model with interactions (Spelling Error x Topography)
-Model 6: A very complex model with interactions (Spelling Error x Topography X Age)
-
-
-### Comparing delta models
-
-```{r running the analyses, out.width  = "49%"}
-# Create a list to hold the model outputs
-mods0 <- list()
-mods1 <- list()
-mods2 <- list()
-mods3 <- list()
-mods4 <- list()
-mods5 <- list()
-mods6 <- list()
-
-for (ii in 1:length(FBdat)) {
-tic()
-# Creating the models
-mods0[[ii]] <- glmer(Power ~ 1 + (1|ID), data = FBdat[[ii]], 
-            family = Gamma(link = "log")) 
-
-
-# Create the six models
-mods1[[ii]] <- glmer(Power ~ Age_z + (1|ID), 
-                     data = FBdat[[ii]], 
-                     family = Gamma(link = "log"))
-
-mods2[[ii]] <- glmer(Power ~ Age_z + Topography + (1|ID), 
-                     data = FBdat[[ii]], 
-                     family = Gamma(link = "log"))
-
-mods3[[ii]] <- glmer(Power ~ Age_z + Topography  + Total_SpellingError_z + (1|ID), 
-                     data = FBdat[[ii]], 
-                     family = Gamma(link = "log"))
-
-mods4[[ii]] <- glmer(Power ~ Age_z + Topography + Age_z*Total_SpellingError_z + (1|ID), 
-                     data = FBdat[[ii]], 
-                     family = Gamma(link = "log"))
-
-mods5[[ii]] <- glmer(Power ~ Age_z + Topography + Age_z*Total_SpellingError_z + Topography*Total_SpellingError_z + (1|ID),
-                     data = FBdat[[ii]], 
-                     family = Gamma(link = "log"),
-                     control = glmerControl(optimizer = "bobyqa", optCtrl = list(maxfun = 1500000)))
-
-mods6[[ii]] <- glmer(Power ~ Age_z * Total_SpellingError_z * Topography + (1|ID), 
-                     data = FBdat[[ii]], 
-                     family = Gamma(link = "log"),
-                     control = glmerControl(optimizer = "bobyqa", optCtrl = list(maxfun = 1500000)))
-toc()
-
-}
-
-# model comparison results
-modcomp <- list()
-
-for(ii in 1:length(FBdat)) {
-modcomp[[ii]] = do.call(anova, c(mods0[[ii]], mods1[[ii]], mods2[[ii]], mods3[[ii]], mods4[[ii]], mods5[[ii]], mods6[[ii]], list(test = "Chisq")))
-
-}
-
-# Give the modeloutput names
-names(modcomp) <- c("delta", "theta", "alpha", "beta")
-
-# Print out the model comparisons
-modcomp
 ```
 
 
 
+### Predicting Spelling Errors from EEG
 
-## Model comparison interpretation
+I do not like this approach. 
 
-As mentioned, eight models were compared. These models were nested, meaning each more complex model builds on a simpler one by adding predictors. This allows us to assess whether each predictor meaningfully improves model fit. If adding a predictor does not significantly improve the model (suggesting no main effect or a weak effect size), but an interaction involving that predictor is significant, then that would suggest that variance can be better explain by introducing that predictor after all to create the interaction!
+```{r predicting spelling errors from EEG}
+abs_df2 <- abs_df %>%
+  pivot_wider(names_from = Topography, values_from = Power)
 
-Using the `anova()` function, we are able to get several model fit statistics.
+psd_df2 <- psd_df %>%
+  pivot_wider(names_from = Topography, values_from = Power)
 
-- **Number of free parameters (npar)**: This is a measurement of model complexity- the larger the number the more complex the model is. A rule of thumb is to not have between 10-20 observations for each parameter in the model. Since I have a sample size of 449 subjects, having a npar value around 20 is very reasonable. 
+rel_df2 <- rel_df %>%
+  pivot_wider(names_from = Topography, values_from = Power)
+  
+abs_modd <- lmer(TSEz ~ frontal + temporal + parietal + occipital + Agez + (1|ID), data = filter(abs_df2, FreqBand == "delta"))
+abs_modt <- lmer(TSEz ~ frontal + temporal + parietal + occipital + Agez + (1|ID), data = filter(abs_df2, FreqBand == "theta"))
+abs_moda <- lmer(TSEz ~ frontal + temporal + parietal + occipital + Agez + (1|ID), data = filter(abs_df2, FreqBand == "alpha"))
+abs_modb <- lmer(TSEz ~ frontal + temporal + parietal + occipital + Agez + (1|ID), data = filter(abs_df2, FreqBand == "beta"))
 
-- **Akaike Information Criterion (AIC)**: A value where the lower it is the better the model fit. Penalizes models for being too complex. 
+psd_modd <- lmer(TSEz ~ frontal + temporal + parietal + occipital + Agez + (1|ID), data = filter(psd_df2, FreqBand == "delta"))
+psd_modt <- lmer(TSEz ~ frontal + temporal + parietal + occipital + Agez + (1|ID), data = filter(psd_df2, FreqBand == "theta"))
+psd_moda <- lmer(TSEz ~ frontal + temporal + parietal + occipital + Agez + (1|ID), data = filter(psd_df2, FreqBand == "alpha"))
+psd_modb <- lmer(TSEz ~ frontal + temporal + parietal + occipital + Agez + (1|ID), data = filter(psd_df2, FreqBand == "beta"))
 
-- **Bayesian Information Criterion (BIC)**: This is similar to AIC but penalizes complex models to a stronger degree. A smaller number also indicates a better fitting model.  
+rel_modd <- lmer(TSEz ~ frontal + temporal + parietal + occipital + Agez + (1|ID), data = filter(rel_df2, FreqBand == "delta"))
+rel_modt <- lmer(TSEz ~ frontal + temporal + parietal + occipital + Agez + (1|ID), data = filter(rel_df2, FreqBand == "theta"))
+rel_moda <- lmer(TSEz ~ frontal + temporal + parietal + occipital + Agez + (1|ID), data = filter(rel_df2, FreqBand == "alpha"))
+rel_modb <- lmer(TSEz ~ frontal + temporal + parietal + occipital + Agez + (1|ID), data = filter(rel_df2, FreqBand == "beta"))
 
-- **logLik**: A less negative value indicates better fit
-
-- **deviance**: How much the model deviates from a perfect fit. A lower deviance is better.
-
-- **Chisq**: a chi-square test. A higher chi-square means the added predictors improved the model. 
-
-- **Df**: The number of additional parameters in the more complex model compared to the simpler one
-
-- **Pr**: The p-value of the chi-square test. 
-
-
-**Model 6** is the best:
-
-Which Model is Best?
-We compare models based on AIC, BIC, and significance tests to find a good balance between fit and complexity. We see that **mod8** fits the best because it has lowest AIC (22879), lowest BIC (23023), lowest deviance (22837) and a Chi-square test indicates it is a significantly better model than the previous model, but really tahn all those that came before it. 
+Anova(rel_modd, type = "III")
+Anova(rel_modt, type = "III")
+Anova(rel_moda, type = "III")
+Anova(rel_modb, type = "III")
+```
 
 
-### Model 8 Main Effects
+### EEG Absolute Power Analysis
 
-```{r lets explore the main effects of our best fitting model}
-# Report the main effects using type III Sums os Squares
-Anova(mods6[[1]], type ="III")
-Anova(mods6[[2]], type ="III")
-Anova(mods6[[3]], type ="III")
-Anova(mods6[[4]], type ="III")
+```{r EEG absolute power analysis}
+# Run the model
+abs_mod <- glmer(Power ~ Condition + Agez + TSEz * FreqBand * Topography  + (1|ID), data = abs_df, 
+                         family = Gamma(link = "log"),
+                 control = glmerControl(optimizer = "bobyqa", optCtrl = list(maxfun = 1500000)))
+
+# Omnibust Test
+Anova(abs_mod, type = "III")
 
 ```
 
-We see here that everything is significant. One may think to adjust the p-values here- to control for multiple comparison. I will not be doing that for a couple of reasons.
+### EEG Power Spectral Density Analysis
 
-1. Multiple comparison for me makes the most sesne when controlling for the comparisons between levels of a factor- this is not
-the case here in this example.
+```{r EEG power spectral analysis}
+# Run the model
+psd_mod <- glmer(Power ~ Condition + Agez + TSEz * FreqBand * Topography + (1|ID), data = psd_df, 
+                         family = Gamma(link = "log"),
+                 control = glmerControl(optimizer = "bobyqa", optCtrl = list(maxfun = 1500000)))
 
-2. Using model comparison we know already that this model is good- so introducing a p-value adjustment would turn this model back
-into an inferior one.
+# Omnibust Test
+Anova(psd_mod, type = "III")
+```
 
-3. I am like 80% sure Dr. Francis mentioned we did not have to do p-value adjusments here. 
+
+### EEG Relative Power Analysis
 
 
-### Investigating the interactions
+```{r EEG relative power analysis}
+# Run the model
+rel_mod <- glmer(Power ~ Condition + Agez + TSEz * FreqBand * Topography  + (1|ID), data = rel_df, 
+                         family = Gamma(link = "log"),
+                 control = glmerControl(optimizer = "bobyqa", optCtrl = list(maxfun = 1500000)))
 
-```{r investigating the interactions}
+# Omnibust Test
+Anova(rel_mod, type = "III")
+```
+
+# Absolute Power
+
+```{r absolute power follow up tests}
+# Estimated Marginal Means for Condition (Eyes open vs Eyes Closed)
+emm_abs_c_df = as.data.frame(emmeans(abs_mod, ~ Condition))
+
+# plot the maringal means with the correct standard errors
+emm_abs_c_df %>%
+  ggplot( aes(x = Condition, y = emmean, color = Condition)) +
+  geom_point(size = 4) +  # Points for estimated marginal means
+  geom_errorbar(aes(ymin = asymp.LCL, ymax = asymp.UCL), 
+                width = 0.2, linewidth = 1) +  # Error bars
+  labs(y = "Estimated Mean (log scale)", 
+       x = "Condition") +
+  theme_minimal(base_size = 14) +
+  scale_color_manual(values = c("Closed" = "steelblue", "Open" = "orange"))
+
+
+# Generate a sequence of Agez values (e.g., from min to max) using the original dataset
+agez_abs_range <- seq(min(abs_df$Agez), max(abs_df$Agez), length.out = 100)
+
+# Create a new data frame with Agez varying and other variables held constant
+pred_age_abs <- data.frame(
+  Agez = agez_abs_range,
+  Condition = levels(abs_df$Condition)[1],  # Set to mean or reference level
+  TSEz = mean(abs_df$TSEz),            # Set to mean or reference level
+  FreqBand = levels(abs_df$FreqBand)[1],           # Set to reference level (replace with actual level)
+  Topography = levels(abs_df$Topography)[1],        # Set to reference level (replace with actual level)
+  ID = abs_df$ID[1]   
+)
+
+# Predict Power for the new data
+pred_age_abs$Predicted_Power <- predict(abs_mod, newdata = pred_age_abs, type = "response")
+
+# Plot the main effect of Agez
+pred_age_abs %>%
+  ggplot(aes(x = Agez, y = Predicted_Power)) +
+  geom_line(size = 2) +
+  labs(x = "Age (z-scores)", y = "Predicted Absolute Power") +
+  theme_minimal() +
+  theme(
+    axis.title.x = element_text(size = 18),  # Increase x-axis title size
+    axis.title.y = element_text(size = 18)   # Increase y-axis title size
+  )
+
+
+
+
+# Freq Band
+emm_abs_FB_df = data.frame(emmeans(abs_mod, ~ FreqBand | Topography ))
+emm_abs_FB_df$Topography <- rep(c("Frontal","Temporal","Parietal", "Occipital"), each = 4)
+
+# Plot the significant Toopograhy and Freq Band interaction
+emm_abs_FB_df %>%
+  mutate(Topography = factor(Topography, levels = c("Frontal", "Temporal", "Parietal", "Occipital"))) %>%
+  ggplot(aes(x = Topography, y = emmean, color = FreqBand)) +
+  geom_point(size = 4) +  # Points for estimated marginal means
+  geom_line(aes(group = FreqBand), size = 1) +  # Add lines connecting points for each Topography
+  geom_errorbar(aes(ymin = asymp.LCL, ymax = asymp.UCL), 
+                width = 0.2, linewidth = 1) +  # Error bars
+  labs(y = "Estimated Mean (log scale)", 
+       x = "Frequency Band") +
+  theme_minimal(base_size = 14) +
+  scale_color_manual(values = c("alpha" = "#FB9A99", "beta" = "#FDBF6F", "delta" = "#B2DF8A","theta" = "#A6CEE3")) +  # Using RColorBrewer's "Set3" palette
+  theme(
+    axis.title.x = element_text(size = 18),  # Increase x-axis title size
+    axis.title.y = element_text(size = 18)   # Increase y-axis title size
+  )
+
+
+```
+
+
+# Power Spectral Density
+
+
+```{r follow up tests for psd}
+# Estimated Marginal Means for Condition (Eyes open vs Eyes Closed)
+emm_psd_c_df = as.data.frame(emmeans(psd_mod, ~ Condition))
+
+# plot the maringal means with the correct standard errors
+emm_psd_c_df %>%
+  ggplot( aes(x = Condition, y = emmean, color = Condition)) +
+  geom_point(size = 4) +  # Points for estimated marginal means
+  geom_errorbar(aes(ymin = asymp.LCL, ymax = asymp.UCL), 
+                width = 0.2, linewidth = 1) +  # Error bars
+  labs(y = "Estimated Mean (log scale)", 
+       x = "Condition") +
+  theme_minimal(base_size = 14) +
+  scale_color_manual(values = c("Closed" = "steelblue", "Open" = "orange"))
+
+
+
+# Generate a sequence of Agez values (e.g., from min to max) using the original dataset
+agez_psd_range <- seq(min(psd_df$Agez), max(psd_df$Agez), length.out = 100)
+
+# Create a new data frame with Agez varying and other variables held constant
+pred_age_psd <- data.frame(
+  Agez = agez_psd_range,
+  Condition = levels(psd_df$Condition)[1],  # Set to mean or reference level
+  TSEz = mean(psd_df$TSEz),            # Set to mean or reference level
+  FreqBand = levels(psd_df$FreqBand)[1],           # Set to reference level (replace with actual level)
+  Topography = levels(psd_df$Topography)[1],        # Set to reference level (replace with actual level)
+  ID = psd_df$ID[1]   
+)
+
+# Predict Power for the new data
+pred_age_psd$Predicted_Power <- predict(psd_mod, newdata = pred_age_psd, type = "response")
+
+# Plot the main effect of Agez
+pred_age_psd %>%
+  ggplot(aes(x = Agez, y = Predicted_Power)) +
+  geom_line(size = 2) +
+  labs(x = "Age (z-scores)", y = "Predicted Absolute Power") +
+  theme_minimal() +
+  theme(
+    axis.title.x = element_text(size = 18),  # Increase x-axis title size
+    axis.title.y = element_text(size = 18)   # Increase y-axis title size
+  )
+
+
+
+# Freq Band
+emm_psd_FB_df = data.frame(emmeans(psd_mod, ~ FreqBand | Topography ))
+emm_psd_FB_df$Topography <- rep(c("Frontal","Temporal","Parietal", "Occipital"), each = 4)
+
+# Plot the significant Toopograhy and Freq Band interaction
+emm_psd_FB_df %>%
+  mutate(Topography = factor(Topography, levels = c("Frontal", "Temporal", "Parietal", "Occipital"))) %>%
+  ggplot(aes(x = Topography, y = emmean, color = FreqBand)) +
+  geom_point(size = 4) +  # Points for estimated marginal means
+  geom_line(aes(group = FreqBand), size = 1) +  # Add lines connecting points for each Topography
+  geom_errorbar(aes(ymin = asymp.LCL, ymax = asymp.UCL), 
+                width = 0.2, linewidth = 1) +  # Error bars
+  labs(y = "Estimated Mean (log scale)", 
+       x = "Frequency Band") +
+  theme_minimal(base_size = 14) +
+  scale_color_manual(values = c("alpha" = "#FB9A99", "beta" = "#FDBF6F", "delta" = "#B2DF8A","theta" = "#A6CEE3")) +  # Using RColorBrewer's "Set3" palette
+  theme(
+    axis.title.x = element_text(size = 18),  # Increase x-axis title size
+    axis.title.y = element_text(size = 18)   # Increase y-axis title size
+  )
+
+```
+
+
+
+# Relative Power
+
+### Investigating the interactions (Prioritizing TSEz!)
+
+```{r investigating the inreaction for relative power}
+# Estimated Marginal Means for Condition (Eyes open vs Eyes Closed)
+emm_rel_c_df = as.data.frame(emmeans(rel_mod, ~ Condition))
+
+# plot the maringal means with the correct standard errors
+emm_rel_c_df %>%
+  ggplot( aes(x = Condition, y = emmean, color = Condition)) +
+  geom_point(size = 4) +  # Points for estimated marginal means
+  geom_errorbar(aes(ymin = asymp.LCL, ymax = asymp.UCL), 
+                width = 0.2, linewidth = 1) +  # Error bars
+  labs(y = "Estimated Mean (log scale)", 
+       x = "Condition") +
+  theme_minimal(base_size = 14) +
+  scale_color_manual(values = c("Closed" = "steelblue", "Open" = "orange"))
+
+
+
+# Generate a sequence of TSEzz values (e.g., from min to max) using the original dataset
+TSEz_rel_range <- seq(min(rel_df$TSEz), max(rel_df$TSEz), length.out = 100,
+                      FreqBand = unique(rel_df$FreqBand))
+
+# Create a new data frame with Agez varying and other variables held constant
+pred_age_rel <- data.frame(
+  TSEz = TSEz_rel_range,
+  Condition = levels(rel_df$Condition)[1],  # Set to mean or reference level
+  Agez = mean(rel_df$Agez),            # Set to mean or reference level
+  FreqBand = unique(rel_df$FreqBand),           # Do this to predict with this interaction
+  Topography = levels(rel_df$Topography)[1],        # Set to reference level (replace with actual level)
+  ID = rel_df$ID[1]    
+)
+
+# Predict Power for the new data
+pred_age_rel$Predicted_Power <- predict(rel_mod, newdata = pred_age_rel, type = "response")
+
+
+# Plot the predicted power for each FreqBand
+pred_age_rel %>%
+  mutate(Low_High_Freq = ifelse(FreqBand %in% c("alpha","beta"), "High Freq", "Low Freq"),
+         Low_High_Freq = factor(Low_High_Freq, levels = c("Low Freq", "High Freq"))) %>%
+  ggplot( aes(x = TSEz, y = Predicted_Power, color = FreqBand)) +
+  geom_line(size = 2) +  # Add lines for the predictions
+  labs(x = "TSEz", y = "Predicted Power") +
+  scale_color_manual(values = c("alpha" = "#FB9A99", "beta" = "#FDBF6F", "delta" = "#B2DF8A","theta" = "#A6CEE3")) +
+  facet_wrap(~Low_High_Freq) +
+  theme_minimal() +
+  theme(
+    axis.title.x = element_text(size = 18),
+    axis.title.y = element_text(size = 18)
+  )
+
+
+
+# Freq Band
+emm_rel_FB_df = data.frame(emmeans(rel_mod, ~ FreqBand | Topography ))
+emm_rel_FB_df$Topography <- rep(c("Frontal","Temporal","Parietal", "Occipital"), each = 4)
+
+# Plot the significant Toopograhy and Freq Band interaction
+emm_rel_FB_df %>%
+  mutate(Topography = factor(Topography, levels = c("Frontal", "Temporal", "Parietal", "Occipital"))) %>%
+  ggplot(aes(x = Topography, y = emmean, color = FreqBand)) +
+  geom_point(size = 4) +  # Points for estimated marginal means
+  geom_line(aes(group = FreqBand), size = 1) +  # Add lines connecting points for each Topography
+  geom_errorbar(aes(ymin = asymp.LCL, ymax = asymp.UCL), 
+                width = 0.2, linewidth = 1) +  # Error bars
+  labs(y = "Estimated Mean (log scale)", 
+       x = "Frequency Band") +
+  theme_minimal(base_size = 14) +
+  scale_color_manual(values = c("alpha" = "#FB9A99", "beta" = "#FDBF6F", "delta" = "#B2DF8A","theta" = "#A6CEE3")) +  # Using RColorBrewer's "Set3" palette
+  theme(
+    axis.title.x = element_text(size = 18),  # Increase x-axis title size
+    axis.title.y = element_text(size = 18)   # Increase y-axis title size
+  )
+
+
+```
+
+
+
+
+```{r investigating the interactions EC}
 library(interactions)
-interact_plot(mods6[[1]], pred = "Age_z", modx = "Total_SpellingError_z", mod2 = "Topography")
-interact_plot(mods6[[2]], pred = "Age_z", modx = "Total_SpellingError_z", mod2 = "Topography")
-interact_plot(mods6[[3]], pred = "Age_z", modx = "Total_SpellingError_z", mod2 = "Topography")
-interact_plot(mods6[[4]], pred = "Age_z", modx = "Total_SpellingError_z", mod2 = "Topography")
+
+# Delta graphs
+interact_plot(rel_mod, pred = "TSEz", modx = "FreqBand")
+
+# Do the follow up test
+(emt1 <- emtrends(rel_mod, ~ FreqBand | TSEz, var = "TSEz"))
+
+# Identify which slopes are significant by running t-tests
+emt1_df <- data.frame(emt1)
+emt1_df <- cbind(emt1_df$FreqBand, round(select(emt1_df,-FreqBand),4))
+
+emt1_df$T.statistic <- round(emt1_df$TSEz.trend / emt1_df$SE,4)
+emt1_df$p.value <- round(2 * (1 - pnorm(abs(emt1_df$T.statistic))),4) # ChatGPT formula
+
+# Adjust the p-values using fdr
+emt1_df <- transform(emt1_df,
+                     p_value_adjusted = round(p.adjust(p.value, method = "fdr"),4))
+
+
+# Create a function that notifies us what level of sig it is
+p_fun <- function(p) {
+  p = round(p,3)
+  if(p > .05) {
+    p = as.character(p)
+    return(p)
+  } else if (p < .001) {
+    p = as.character(p)
+    return(paste0(p,"***"))
+  } else if (p < .01) {
+    p = as.character(p)
+    return(paste0(p,"**")) 
+  } else {
+    p = as.character(p)
+    return(paste0(p,"*")) 
+  }
+}
+
+# Obtain the astericks for the p-values
+emt1_df$p_value_adjusted2 <- sapply(emt1_df$p_value_adjusted, p_fun)
+emt1_df$Sig <- ifelse(emt1_df$p_value_adjusted < .05, "Yes", "No")
+emt1_df
+
+# Plot the 
+
+library(ggplot2)
+library(dplyr)
+
+# Define the order of frequency bands
+plot_data <- emt1_df %>%
+  rename(FreqBand = `emt1_df$FreqBand`, 
+         Trend = TSEz.trend, 
+         SE = SE, 
+         LCL = asymp.LCL, 
+         UCL = asymp.UCL, 
+         p_value = p.value) %>%
+  mutate(FreqBand = factor(FreqBand, levels = c("delta", "theta", "alpha", "beta")),  # Set custom order
+         Significant = ifelse(p_value < 0.05, "Yes", "No"))  # Mark significance
+
+ggplot(plot_data, aes(x = FreqBand, y = Trend, color = Significant)) +
+  geom_point(size = 4) +  # Points for estimated slopes
+  geom_errorbar(aes(ymin = LCL, ymax = UCL), width = 0.2, linewidth = 1) + # Error bars
+  geom_hline(yintercept = 0, linetype = "dashed", color = "black") +  # Reference line at zero
+  scale_color_manual(values = c("Yes" = "red", "No" = "gray")) + # Highlight significance
+  labs(title = "Spelling Error Slopes by Frequency Band", 
+       y = "Estimated Slope (TSEz)", 
+       x = "Frequency Band", 
+       color = "Significant (p < 0.05)") +
+  theme_minimal(base_size = 14)
+
+
+
 ```
 
 
+### ARCHIVED CODE FROM INITIAN ANALYSIS
 
+```{r archived code from abs mod}
 
-### Comparing Gamma vs Gaussian
-
-
-```{r plotting residuals of gamma and gaussian}
-# Creating the Guassian counterpart to compare distribution of the errors
-mod8_guassian <- glm(Power ~  Topography + FreqBand * Age_z * Total_SpellingError_z + (1|ID), data = data4, 
-            family = gaussian(link = "identity"))
-
-# Plotting the residuals
-qqnorm(resid(mod8))
-qqline(resid(mod8))
-hist(resid(mod8))
-qqnorm(resid(mod8_guassian))
-qqline(resid(mod8_guassian))
-hist(resid(mod8_guassian))
 ```
