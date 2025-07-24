@@ -1,11 +1,28 @@
+# This script is scoring ARFA spelling errors by maxing error numbers to 2
+# Additionally a graded IRT model will be used to estimate theta values that measure spelling errors
+# This is because at least three values can be present for each item
+
+# Load in Packages
 library(readxl)
 library(tidyverse)
+library(mirt)
+library(purrr)
 
 # Set the working directory
-setwd("~/MegaGrant/ARFA Spelling Mistakes")
+setwd("Y:/RAW_DATA/Behavior/Usable ARFA Excels")
 
 # load in the ARFA data that is unscored
 ARFA.spelling <- read_excel("ARFA_Spelling_mistakes.xlsx")
+
+
+###########                                   #############
+########### THE REST OF THE CODE IS AUTOMATIC #############
+###########  
+
+
+#####
+######## Part 1: Scoring Error By Recommendations from Russian Colleagues
+#####
 
 
 # Items Spelling Error list
@@ -45,7 +62,6 @@ for(ii in 1:22) {
 }
 
 
-
 # Bind these scores into one dataset
 Items.Spelling.Error.Binded <- data.frame(do.call(cbind, Items.Spelling.Error))
 
@@ -61,21 +77,37 @@ ARFA.spelling.scored <- cbind(ARFA.spelling,
                               Items.Spelling.Error.Binded) %>%
   tibble()
 
-# Introduce Z scores into the dataset
-ARFA.spelling.scored$Total_SpellingError_Z <- c(scale(ARFA.spelling.scored$Total_SpellingError))
+#######
+############# Part 2: Graded Response Model
+#######
 
-# Save those whose errors was more than 2SD away from the mean
-ARFA.spelling.scored.2SD <- ARFA.spelling.scored %>%
-  filter(Total_SpellingError_Z >= 2)
+# Save the items into their own dataset
+ARFA_Items <- ARFA.spelling.scored %>%
+  select(Item1_SpellingError:Item22_SpellingError)
 
+# Count the total number of unique responses for each item
+sapply(ARFA_Items, function(x) table(x))
+
+# Specify the model
+mod <- paste0("F = 1-",length(ARFA_Items))
+
+# Count the number of unique value  for each item (ignore na's)
+item_values <- do.call(c, map(ARFA_Items, ~ length(unique(na.omit(.x)))))
+
+# Generate the item types vector
+item_types <- ifelse(item_values == 1, "Remove", 
+                     ifelse(item_values == 2, "2PL" ,"graded"))
+
+# Run the mirt model and produce the theta scores
+fit_mirt <- mirt(ARFA_Items, model = mod, itemtype = item_types, SE = TRUE, technical = list(NCYCLES = 20000))
+ARFA.spelling.scored$theta <- c(fscores(fit_mirt, method = "EAP"))
+
+# Obtain the correlation
+cor(ARFA.spelling.scored$Total_SpellingError, 
+    ARFA.spelling.scored$theta)
 
 # Set the working directory to save our data
-setwd("~/Masters Project/cleaned_predictor_covariates")
+setwd("Y:/FINAL_DS/ARFA")
 
 # Save the version of Spelling Performance
 write_csv(ARFA.spelling.scored, file = "ARFA.Spelling.Errors.Scored.csv")
-
-# Save the tweaked version of Spelling performance
-write.xlsx(ARFA.spelling.scored.2SD, file = "ARFA.Spelling.Errors.Scored.2SD.xlsx")
-
-
