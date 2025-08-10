@@ -48,8 +48,8 @@ clean_wet_rseeg(EEG_fullpath, '.set', EEG_save_path, EEG_csv_save_path, ...
 %%%%%%%%%%%%%%%%%%%%%%%%% Running FFT %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 % Insert more pathways
-inputdir = 'C:\Users\lledesma\Documents\MegaGrant\04_Clean_EEG_Data\';  
-outputdir = 'C:\Users\lledesma\Documents\MegaGrant\05_FFT_Welch_Outcomes\';
+inputdir = 'C:\Users\lledesma\Documents\MegaGrant\02_Clean_EEG_Data\';  
+outputdir = 'C:\Users\lledesma\Documents\MegaGrant\03_FFT_Welch_Outcomes\';
 bands = {'delta', 'theta', 'alpha', 'beta'};  
 frexvc = [1, 4; 4, 8; 8, 13; 13, 30];  % [start, end] Hz for each band
 setfiles = dir(fullfile(inputdir, '*.set'));  
@@ -89,6 +89,38 @@ matfiles = dir(fullfile(outputdir, '*welchx2.mat'));
 
 % Load in saved .mat files
 awelchx = loadStructs(outputdir, matfiles, strctfieldnames);
+
+
+
+%%%%%%%%%% (Optional) Visualizing the Power Spectrum %%%%%%%%%%%
+% Initialize variables to store indices for each condition
+eyes_closed_idx = contains({awelchx.filename}, 'EyesClosed');
+eyes_open_idx = contains({awelchx.filename}, 'EyesOpen');
+
+% Separate structs based on condition
+awelchx_closed = awelchx(eyes_closed_idx);
+awelchx_open = awelchx(eyes_open_idx);
+
+% Compute average powavg for EyesClosed
+powavg_closed_all = cat(3, awelchx_closed.powavg);
+avg_powavg_closed = mean(powavg_closed_all, 3);
+
+% Compute average powavg for EyesOpen
+powavg_open_all = cat(3, awelchx_open.powavg);
+avg_powavg_open = mean(powavg_open_all, 3);
+
+% Plot the data
+figure(1), clf
+plot(awelchx(1).hz, avg_powavg_open)
+set(gca,'xlim', [0 30])
+xlabel('Frequency (Hz)')
+title(sprintf('Power Spectrum (Eyes Open; n = %d)', sum(eyes_open_idx)))
+
+figure(2), clf
+plot(awelchx(1).hz, avg_powavg_closed)
+set(gca,'xlim', [0 30])
+xlabel('Frequency (Hz)')
+title(sprintf('Power Spectrum (Eyes Closed; n = %d)', sum(eyes_closed_idx)))
 
 
 %%%%%% Creating topography x frequency band output table (Wide) %%%%%%

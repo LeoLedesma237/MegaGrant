@@ -1,0 +1,164 @@
+---
+title: "Intro Effect Sizes Calculation"
+output: html_document
+date: "2025-07-22"
+---
+
+# DISCLAIMER: Code compatible to run on the SAS 9 Computer 
+
+
+### Universal block code settings
+
+```{r setup}
+knitr::opts_chunk$set(echo = FALSE)
+knitr::opts_chunk$set(message = FALSE)
+knitr::opts_chunk$set(comment = NULL)
+knitr::opts_chunk$set(warning = FALSE)
+
+```
+
+```{r loading in the packages, warning = FALSE}
+library(tidyverse)
+
+```
+
+
+The goal of this script is to calculate effect sizes for the several papers that are cited in the manuscript introduction. This mainly corresponds to studies that report ANOVA test statistics without any means or standard deviations, which is common. Thus, below we will create vectors with values representing F statistics, df for the effect and df for the error, and then convert that information into a **partial eta squared** value using a custom made function that was verified to be accurate.
+
+To keep things homogenous in the paper, we will continue this approach even if means, standard deviations, and sample sizes are reported. 
+
+
+### The partial eta squared custom function that will be used for calculating all effect sizes 
+```{r partial eta squared custom function}
+# Custom function
+Partial_eta_s_from_f_and_df <- function(f_stat, df_effect, df_error){
+  (f_stat * df_effect)/(f_stat * df_effect + df_error)
+}
+```
+
+
+
+# Calculating effect sizes for Brain Maturation in General (How rsEEG changes throughout development)
+
+
+## Somsen et al., 1997
+```{r calculating effect sizes for Somsen}
+anova_table_sep <- data.frame(
+  Effect = c("Age", "Channel", "Age * Channel", "Band", "Age * Band", "Channel * Band", "Age * Channel * Band"),
+  
+  # Absolute Power EO
+  Abs_EO_F = c(9.66, 314.77, 1, 2656.91, 4.28, 175.89, 2.19),
+  Abs_EO_df1 = c(7, 5, 35, 3, 19, 12, 84),
+  Abs_EO_df2 = c(131, 656, 656, 348, 348, 1575, 1575),
+  
+  # Absolute Power EC
+  Abs_EC_F = c(5.04, 555.54, 1.00, 2981.83, 8.33, 216.89, 2.50),
+  Abs_EC_df1 = c(7, 4, 26, 3, 19, 12, 85),
+  Abs_EC_df2 = c(134, 504, 504, 369, 369, 1630, 1630),
+  
+  # Relative Power EO
+  Rel_EO_F = c(9.88, 132.82, 2.79, 586.92, 3.83, 143.98, 2.04),
+  Rel_EO_df1 = c(7, 5, 37, 3, 18, 13, 89),
+  Rel_EO_df2 = c(131, 684, 684, 340, 340, 1657, 1657),
+  
+  # Relative Power EC
+  Rel_EC_F = c(10.85, 63.22, 4.01, 765.20, 8.23, 219.71, 2.84),
+  Rel_EC_df1 = c(7, 5, 34, 6, 18, 10, 73),
+  Rel_EC_df2 = c(134, 641, 641, 347, 347, 1401, 1401)
+)
+
+# Oeganize this information into a list
+data_list <- list(Abs_EO = select(anova_table_sep, Effect, Abs_EO_F:Abs_EO_df2),
+                  Abs_EC = select(anova_table_sep, Effect, Abs_EC_F:Abs_EC_df2),
+                  Rel_EO = select(anova_table_sep, Effect, Rel_EO_F:Rel_EO_df2),
+                  Rel_EO = select(anova_table_sep, Effect, Rel_EC_F:Rel_EC_df2))
+
+# Create a list to store new dataset
+data_list2 <- list()
+
+# run a for loop to produce the eta square for each row in each dataset
+for(ii in 1:length(data_list)) {
+  
+  # Extract current dataset
+  current_df <- data_list[[ii]]
+  
+  # Calculate partial eta squared
+  current_df$eta_squared <- mapply(Partial_eta_s_from_f_and_df, 
+                                   f_stat = current_df[,2], 
+                                   df_effect = current_df[,3], 
+                                   df_error = current_df[,4]) %>% round(3)
+  
+  # Save dataset
+  data_list2[[ii]] <- current_df
+}
+
+
+# Print out the tables
+data_list2
+
+
+```
+
+
+
+# Calculating effect sizes for rsEEG differences between poor and normal spelling children 
+
+There are many papers that do not provide enough information to even calculate the effect sizes!!
+
+## Fein et al., 1986
+
+They report main effects for group (dyslexics vs controls) for alpha for two different cohorts. Specifics are on the wiki. 
+
+```{r calculating effect sizes from Fein}
+# Alpha for cohort 1
+round(Partial_eta_s_from_f_and_df(6.30, 1, 59),2)
+
+# Alpha for cohort 2
+round(Partial_eta_s_from_f_and_df(0.21, 1, 39),2)
+```
+## Arns et al., 2007
+
+```{r calculating effect sizes from Arns}
+# Between groups Main Effect for delta
+round(Partial_eta_s_from_f_and_df(4.861, 1, 34),2) # Fp2    
+round(Partial_eta_s_from_f_and_df(4.806, 1, 34),2) # F7
+round(Partial_eta_s_from_f_and_df(6.193, 1, 35),2) # T6
+
+# Between groups main effect for theta
+round(Partial_eta_s_from_f_and_df(5.074, 1, 34),2) # Fp2    
+round(Partial_eta_s_from_f_and_df(8.267, 1, 34),2) # F7
+
+# Between groups main effects for beta
+ round(Partial_eta_s_from_f_and_df(4.450, 1, 34),2) # F7
+```
+
+
+
+
+
+## Babiloni et al., 2012
+
+```{r calculating effect sizes from Babiloni}
+# Two-way interaction (Group x Frequency Band)
+round(Partial_eta_s_from_f_and_df(2.54, 7, 245),2) 
+
+# Three-way interaction (Group x Frequency Band)
+round(Partial_eta_s_from_f_and_df(2.19, 35, 1225),2) 
+
+```
+
+## Papagiannopoulou & Lagopoulos, 2016
+
+Because there is one degree of freedom for the effect, we can assume that this model just had Group as a factor and nothing else, and that this was done for a dataset that is subsetted to only include one type of topography.
+
+```{r calculating effect sizes from Babiloni}
+# Frontal & Theta in Dyslexics (Between Group)
+round(Partial_eta_s_from_f_and_df(5.25, 1, 38),2) 
+
+# Brocha & Theta in Dyslexics (Between Group)
+round(Partial_eta_s_from_f_and_df(6.34, 1, 38),2) 
+
+# Left Hemisphere & Theta in Dyslexics (Between Group)
+round(Partial_eta_s_from_f_and_df(4.74, 1, 38),2) 
+
+```
