@@ -1,5 +1,5 @@
 ---
-title: "Analyzing resting-state EEG and Spelling Performance in Young Adults (Gamma)"
+title: "Analyzing resting-state EEG and Spelling Performance in Young Adults (Gamma & Beta)"
 author: "Leandro Ledesma"
 date: "2024-12-24"
 output: html_document
@@ -445,6 +445,19 @@ We will be combining absolute, mean, and relative power into a single dataset to
 
 
 ```{r EEG data skewness visulization }
+# Load in package
+library(patchwork)
+library(ggh4x) # facet_grid2
+
+# Aesthetics (Leo version)
+theme_clean <- function() {
+  theme_minimal() +
+    theme(legend.position = "bottom",
+          panel.grid.minor = element_blank(),
+          plot.title = element_text(hjust = 0.5))
+}
+
+# Plot the general distribution of power (outcome)
 rbind(
   data_list$EO_ABS, 
   data_list$EO_AVG,
@@ -454,24 +467,60 @@ rbind(
   geom_histogram()+
   facet_wrap(~Power_Type, scales = "free") +
   theme_classic() +
-  labs(title = "General distribution of Power by Type") +
-  theme(plot.title = element_text(hjust = 0.5))
+  labs(title = "General distribution of Power for Absolute, Mean, and Relative") +
+  theme_clean()
 
 
-rbind(
-  data_list$EO_ABS, 
-  data_list$EO_AVG,
-  data_list$EO_REL
-) %>%
-  ggplot(aes(x = Topography, y = Power, fill = Frequency_Band)) +
-  #geom_violin() +
-  geom_boxplot() +
-  facet_grid(Topography~Power_Type, scales = "free") +
-  coord_flip() +
-  labs(title = "Absolute, Mean Absolute and Relative Power Across\nTopography and Frequency Bands in Eyes Open") +
-  theme(plot.title = element_text(hjust = 0.5))
+# Plot disaggregated Eyes Open Power Distribution for Absolute, Mean, Relative
+EO_ABS_plot <- data_list$EO_ABS %>%
+  ggplot(aes(x = Power, fill = Frequency_Band)) +
+  geom_histogram(color = "black") +
+  facet_grid2(Frequency_Band ~ Topography, scales = "free", independent = "all") +
+  labs(title = "Eyes Open: Absolute Power") +
+  theme_clean()
+
+EO_AVG_plot <- data_list$EO_AVG %>%
+  ggplot(aes(x = Power, fill = Frequency_Band)) +
+  geom_histogram(color = "black") +
+  facet_grid2(Frequency_Band ~ Topography, scales = "free", independent = "all") +
+  labs(title = "Eyes Open: Mean Power", y = NULL) +
+  theme_clean()
+
+EO_REL_plot <- data_list$EO_REL %>%
+  ggplot(aes(x = Power, fill = Frequency_Band)) +
+  geom_histogram(color = "black") +
+  facet_grid2(Frequency_Band ~ Topography, scales = "free", independent = "all") +
+  labs(title = "Eyes Open: Relative Power", y = NULL) +
+  theme_clean()
+
+# Generate the plots
+EO_ABS_plot + EO_AVG_plot + EO_REL_plot
 
 
+# Plot disaggregated Eyes Closed Power Distribution for Absolute, Mean, Relative
+EC_ABS_plot <- data_list$EC_ABS %>%
+  ggplot(aes(x = Power, fill = Frequency_Band)) +
+  geom_histogram(color = "black") +
+  facet_grid2(Frequency_Band ~ Topography, scales = "free", independent = "all") +
+  labs(title = "Eyes Closed: Absolute Power") +
+  theme_clean()
+
+EC_AVG_plot <- data_list$EC_AVG %>%
+  ggplot(aes(x = Power, fill = Frequency_Band)) +
+  geom_histogram(color = "black") +
+  facet_grid2(Frequency_Band ~ Topography, scales = "free", independent = "all") +
+  labs(title = "Eyes Closed: Mean Power", y = NULL) +
+  theme_clean()
+
+EC_REL_plot <- data_list$EC_REL %>%
+  ggplot(aes(x = Power, fill = Frequency_Band)) +
+  geom_histogram(color = "black") +
+  facet_grid2(Frequency_Band ~ Topography, scales = "free", independent = "all") +
+  labs(title = "Eyes Closed: Relative Power", y = NULL) +
+  theme_clean()
+
+# Generate the plots
+EC_ABS_plot + EC_AVG_plot + EC_REL_plot
 ```
 
 
@@ -508,10 +557,10 @@ for(ii in 1:length(data_list)){
   # Generate a plot for this
   plot_list[[ii]] <- current_dat %>%
     ggplot(aes(x = Age, y = Power)) +
-    facet_wrap(Topography ~ Frequency_Band, scales = "free_y") +
+    facet_grid2(Topography ~ Frequency_Band, scales = "free", independent = "all") +
     geom_smooth(aes(group = TSE_theta_cat, color = TSE_theta_cat), se = FALSE, size = 1.5, alpha = .5) +
     geom_smooth(aes(group = "All Subjects", color = "All Subjects"), se = FALSE, size = 1, alpha = .5) +
-    scale_color_manual(values = c("#000000", "#B3B3B3", "#D9D9D9", "blue"),
+    scale_color_manual(values = c("#000000", "#B3B3B3", "#FF0000", "blue"),
                        labels = c(levels(current_dat$TSE_theta_cat), "All Subjects")) +
     labs(title = paste0(current_power_type, " Power for Spelling Performance by Topography and Frequency Band\n(Eyes ", current_condition, ")"), 
          color = "Group") +
@@ -520,9 +569,6 @@ for(ii in 1:length(data_list)){
 
 # Show the plots on the Console
 plot_list
-
-
-
 
 
 ```
@@ -542,6 +588,150 @@ plan(multisession, workers = 12)  # Set number of workers (check your specs); us
 
 ## Research Question
 - We are interested in investigating spelling performance/spelling error as a predictor of EEG activity. We hypothesize that spelling ability will result in differences in brain activity while controlling for covariates like Age, Group (Bio vs Ins), and topography. However, this is more exploratory since literature on this topic is mixed and I don't believe anyone has done this type of analysis on adults. Thus we will also include interactions to see if the relationship between spelling performance and EEG activity (average FB power) is moderated by other variables like age, or topography. 
+
+
+### Identify that gamma models can capture the distribution of absolute and mean power
+
+```{r identifying that gamma models can capture the spread of our power outcome}
+# Run an empty gamma mixed model
+m_gam_test <- glmer(Power ~ 1 + (1|ID), 
+                     data = data_list$EO_ABS, 
+                     family = Gamma(link = "log"))
+
+# Calculate the shape and scale parameters
+shape_scale_fun <- function(model) {
+  # This will only work on gamma mixed models with a log link function
+  b0 <- fixef(model)[["(Intercept)"]]
+  mu <- exp(b0)
+  phi <- sigma(model)^2 # Residual sd
+  var_int <- as.data.frame(VarCorr(model))$vcov[as.data.frame(VarCorr(model))$grp == "ID"] # Random intercepts
+  variance <- mu^2 * (phi + var_int)
+  
+  # Calculate the gamma parameters
+  shape <- mu^2/variance
+  scale <- variance/mu
+  return(list(shape = shape, scale = scale))
+}
+
+# Calculate the shape and scale from the model
+shape <- shape_scale_fun(m_gam_test)$shape
+scale <- shape_scale_fun(m_gam_test)$scale
+
+# Overlap the gamma distribution over the response variable
+ggplot(data_list$EO_ABS, aes(x = Power)) +
+  geom_histogram(aes(y=..density..), alpha = 0.5) +
+  geom_function(fun = dgamma, args = list(shape = shape, scale = scale),
+                aes(color = "yes"), 
+                linewidth = 1) +
+  labs(title = "Fitted Gamma Distribution for Eyes Open Absolute Power") +
+  theme_clean()
+```
+
+
+### Idenfitying that beta models can capture the distribution of relatice power
+
+```{r identifying that beta models can capture the spread of our power outcome}
+# Checking disaggregation of the proportions
+xtabs(Power~ Topography + Frequency_Band, filter( data_list$EO_REL, ID == "10027")) %>%
+  addmargins() %>%
+  round(2)
+
+# Load in the package to run a multivariate beta regression
+library(glmmTMB)
+
+# Run an empty beta mixed model
+m_bet_test <- glmmTMB(Power ~ 1 + (1|ID), 
+                      data = data_list$EO_REL, 
+                      dispformula = ~ 1, 
+                      family = beta_family(link = "logit"), #
+                      ziformula = ~0) 
+
+# Calculate the shape1 and shape2 parameters
+shape1_shape2_fun <- function(model) {
+  # This will only work on beta mixed models with a logit link function
+  b0 <- fixef(model)$cond[["(Intercept)"]]
+  mu <- 1 / (1 + exp(-b0)) # Same as plogis()
+  phi <- sigma(model) # Phi 
+  
+  # Calculate the beta parameters
+  shape1 <- mu * phi
+  shape2 <- (1 - mu) * phi
+  return(list(shape1 = shape1, shape2 = shape2))
+}
+
+# Calculate the shape1 and shape2 from the model 
+shape1 <- shape1_shape2_fun(m_bet_test)$shape1
+shape2 <- shape1_shape2_fun(m_bet_test)$shape2
+
+# Overlap the beta distribution over the response variable
+ggplot(data_list$EO_REL, aes(x = Power)) +
+  geom_histogram(aes(y=..density..), alpha = 0.5) +
+  geom_function(fun = dbeta, args = list(shape1 = shape1, shape2 = shape2),
+                aes(color = "yes"), 
+                linewidth = 1) +
+  labs(title = "Fitted Beta Distribution for Eyes Open Relative Power") +
+  theme_clean()
+
+
+# Let's see what happens if we add the predictor for frequency band for both mu and phi
+m_bet_test2 <- update(m_bet_test, . ~ . - 1 + Frequency_Band,
+                      dispformula = ~  - 1 + Frequency_Band,
+                      REML = TRUE)
+
+#m_bet_test2 <- update(m_bet_test, . ~ . - 1 + Frequency_Band) # Keeping phi constant
+
+# Create a shape1 and shape2 function
+shape1_shape2_fun2 <- function(model) {
+  # This function only works for beta mixed models with a logit link function and phi log link
+  # Extract fixed effects for the mean model (conditional)
+  estimates <- fixef(model)$cond
+  mu <- sapply(estimates, function(x) plogis(x))
+  
+  # Extract the fixed effects for the phi model
+  phi_estimates <- fixef(model)$disp
+  phi <- sapply(phi_estimates, function(x) exp(x))  
+  
+  # Calculate shape1 and shape2
+  shape1 = mu*phi
+  shape2 = (1-mu) * phi
+  return(list(shape1 = shape1, shape2 = shape2))
+
+}
+
+# Extract the shape1 and shape2 parameters
+shape1_vec <- shape1_shape2_fun2(m_bet_test2)$shape1
+shape2_vec <- shape1_shape2_fun2(m_bet_test2)$shape2
+
+# Cheese to generate the plots cause having them in one is difficult
+beta_plots <- list()
+unique_fb <- c("Delta","Theta","Alpha","Beta")
+
+for(ii in 1:4) {
+beta_plots[[ii]] <- filter(data_list$EO_REL, Frequency_Band == unique_fb[ii]) %>%
+  ggplot(aes(x = Power)) +
+  geom_histogram(aes(y=..density..), alpha = 0.5) +
+  geom_function(fun = dbeta, args = list(shape1 = shape1_vec[ii], shape2 = shape2_vec[ii]),
+                aes(color = NULL), 
+                linewidth = 1) +
+  scale_y_continuous(limits = c(0, 12)) +
+  scale_x_continuous(limits = c(0, .8)) +
+  labs(title = paste0("Beta Distribution for ",unique_fb[ii]," Eyes Open\nRelative Power" )) +
+  
+  theme_clean()
+}
+
+# Plot all the graphs
+main_plot <- (beta_plots[[1]] + beta_plots[[2]])/(beta_plots[[3]] + beta_plots[[4]])
+main_plot
+
+# Comparing beta models
+logLik(m_bet_test); logLik(m_bet_test2)
+AIC(m_bet_test); BIC(m_bet_test2)
+lrtest(m_bet_test, m_bet_test2)
+
+```
+
+
 
 
 
