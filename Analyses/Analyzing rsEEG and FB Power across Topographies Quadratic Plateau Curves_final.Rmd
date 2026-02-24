@@ -1,0 +1,1026 @@
+---
+title: "Analyzing resting-state EEG and Spelling Performance in Young Adults (Quadratic Plateau)"
+author: "Leandro Ledesma"
+date: "2024-12-24"
+output: html_document
+---
+
+### Universal block code settings
+
+```{r setup}
+knitr::opts_chunk$set(echo = FALSE)
+knitr::opts_chunk$set(message = FALSE)
+knitr::opts_chunk$set(comment = NULL)
+knitr::opts_chunk$set(warning = FALSE)
+
+```
+
+### Loading in packages
+
+```{r loading in the packages, warning = FALSE}
+library(tidyverse)
+library(ggplot2)
+library(readxl)
+library(kableExtra)
+library(broom) # Converts regression outputs into dataframes using the tidy() function
+library(psych)
+library(MASS, exclude = "select") # This package is loaded with QuantPsyc, must exclude "select" or you wont be able to use it. 
+library(QuantPsyc) # Can use the lm.beta function to calculate the standardized betas
+library(car) # To calculate VIF
+library(performance) # ICC 
+library(lme4) #glmer
+library(interactions) # interact_plot
+library(emmeans)
+library(effects) #plot(allEffects(model))
+library(sjPlot) # plot_model
+library(MuMIn)
+library(lmtest)
+library(patchwork)
+library(nlme) #gnls()
+library(soiltestcorr) # quadratic_plateau()
+
+```
+
+### Loading in our data and doing some data cleaning
+
+Here we are loading all of our non EEG behavioral data. What is of interest to us are:
+
+- demographic information (age, sex)
+- ARFA scores (standardized scores of spelling performance)
+- Medical information (to remove DD or head injuries)
+
+After some minor data cleaning we combine the information into one dataset
+
+```{r load in the predictors covariates and outcome data, warning= FALSE}
+# Set the working directory
+Mega <- '\\\\files.times.uh.edu/labs/MIR_Lab/MEGAGRANT/STUDY 1/FINAL_DS'
+setwd(Mega)
+
+# load data
+demo <- read_excel("Demo/MegaGrant_TBL_Database_Newest_MCh with duration.xlsx")
+ARFA <- read.csv("ARFA/ARFA.Spelling.Errors.Scored.csv")
+Medical <- read_excel("Medical_History/TBL_WHOQOL_BRIEF_Medical_S1_S3_DM_06.xlsx",  sheet = "med s1")
+
+# Data cleaning (Renaming variables and selectings vars of interest)
+ARFA <- select(ARFA, ID, TSE = Total_SpellingError, TSE_theta = theta)
+demo <- demo %>%
+  select(S1 = `S1 reg-list`,
+         ID, 
+         Sex, 
+         Age, 
+         Group) %>%
+  mutate(ID = as.numeric(ID),
+         Age = as.numeric(Age)) 
+Medical2 <- select(Medical, ID, HeadTrauma, Health2epilepsy, Health2autism, ADD, Dislexia)
+
+# Change Spelling Errors to Spelling Ability
+ARFA$SpellAb <- max(ARFA$TSE) - ARFA$TSE
+ARFA$SpellThta <- ARFA$TSE_theta * - 1
+
+### Combine the dataset into one
+data <- demo %>%
+  full_join(ARFA, by = "ID") %>%
+  full_join(Medical2, by = "ID")
+
+# Drop any NA's from the following variables
+data <- drop_na(data, ID)
+
+# Keep only unique instances
+data <- unique(data)
+
+# Any duplicates?
+dup <- data %>%
+  group_by(ID) %>%
+  summarise(duplicates = n())
+
+cat("There are:",sum(dup$duplicates>2),"duplicates in the data")
+
+# Drop the duplicate IDs (if any) for now
+dup_id <- dup$ID[dup$duplicates > 2]
+data <- data %>% filter(!ID %in% dup_id)
+
+# Keep subjects only from study 1
+data <- data %>%
+  filter(S1 == "+")
+```
+
+Here we are loading two types of EEG information:
+
+- Individual power spectra (FFT) of rsEEG recordings
+- An EEG QC CSV 
+
+The power spectra holds information to our rsEEG outcome- the QC will be used to remove recordings that were problematic during the preprocessing stage. Additionally some EEG recordings will be discareded here because their IDs are not real or because they provided extreme power spectra for the FB. Lastly we merge this information with our behavioral data. 
+
+```{r Load and preprocess EEG data}
+# Get the pathways to where the EEG data is saved
+eegPath <- "Y:/FINAL_DS/EEG/rsEEG"
+
+# Get all file names and create an empty list
+all_fft_files <- list.files(path = file.path(eegPath, "fft"), pattern = "fft")
+all_fft_files_full <- file.path(eegPath, "fft", all_fft_files)
+all_files_list <- list()
+
+# Read in each file one by one and save within a list
+for(ii in 1:length(all_fft_files)){
+  # Read in the file
+  read_file <- read.csv(all_fft_files_full[ii])
+  # Saves the file name within the file
+  read_file$filename <- all_fft_files[ii]
+  # Save the recording into a list
+  all_files_list[[ii]] <- read_file
+  names(all_files_list)[ii] <- all_fft_files[ii]
+}
+
+# Combine the FFT files into one dataset
+FFT_dat <- do.call(rbind, all_files_list)
+
+# Create a function that accurately extracts the ID of the file
+clean_eeg_ids <- function(x) {
+  x_gsub <- gsub("_preproc_fft.csv|EyesClosed|_RAW|_ RAW|RAW_|_", "", x)
+  return(x_gsub)
+}
+
+# Recover the ID for each recording + specify condition
+FFT_dat <- FFT_dat %>%
+  mutate(ID = clean_eeg_ids(filename),
+         Condition = ifelse(grepl("Open", filename), "Open", "Closed"))
+
+# load in the EEG QC
+EEG_QC <- read.csv(file.path(eegPath, "EEG_Preprocessing_Summary_Statistics_EC.csv"))
+
+# Delete weird column that has duplicate from one file (idk how that happened maybe parallel processing bug)
+#EEG_QC <- select(EEG_QC, - s14_eegvarsum_chanvar, - s14_eegvarsum_globalvar)
+
+# Use the same cleaning as above on this data
+EEG_QC <- EEG_QC %>%
+  mutate(ID = clean_eeg_ids(subject),
+         Condition = ifelse(grepl("Open", subject), "Open", "Closed"))
+
+# Join the datasets together
+EEG_dat <- FFT_dat %>%
+  full_join(EEG_QC, by = c("ID", "Condition"))
+
+
+# Read in the EEG mismatch dataset
+eeg_mismatch <- read_excel(file.path(eegPath, "MegaGrant_TBL.xlsx"))
+
+# Data cleaning
+eeg_mismatch <- select(eeg_mismatch, ID, RAW)
+eeg_mismatch <- drop_na(eeg_mismatch, RAW)
+
+# Identify which rsEEG recordings need to have their ID renamed
+newEEGIDs <- setdiff(eeg_mismatch$RAW, eeg_mismatch$ID)
+newEEGIDs_df <- eeg_mismatch[eeg_mismatch$RAW %in% newEEGIDs,]
+cat("rsEEG IDs that need to be renamed (RAW -> ID)")
+newEEGIDs_df
+
+# Change the RAW eeg IDs to their correct names
+mapping <- setNames(newEEGIDs_df$ID, newEEGIDs_df$RAW)
+EEG_dat <- EEG_dat %>%
+  mutate(ID = if_else(ID %in% names(mapping), 
+                      mapping[ID], 
+                      ID))
+
+# Checking to see if it worked
+cat("It it should say 0 below if it worked and IDs were renamed")
+sum(newEEGIDs_df$RAW %in% unique(EEG_dat$ID))
+
+# Create new variables for the EEG dataset
+EEG_dat$trialsrmv <- EEG_dat$s5_rjctbadtrials_initialtrials - EEG_dat$endTrialnum # This is accurate
+EEG_dat$trialpropremain <- round(EEG_dat$endTrialnum/EEG_dat$s5_rjctbadtrials_initialtrials,3)
+
+# EEG Cleaning- keeping only the variables that we care about 
+EEG_dat2 <- EEG_dat %>% 
+  select(ID, 
+         Condition, 
+         start_trial = s5_rjctbadtrials_initialtrials,
+         start_globvar = s2_eegvarsum_globalvar,
+         trialsrmv,
+         end_trial = endTrialnum,
+         trialpropremain,
+         end_globvar = s10_eegvarsum_globalvar,
+         int_total,
+         channel,
+         frequency,
+         power,
+         elec_pop = s4_rmvbadchan_pop_chan,
+         elec_flat = s4_rmvbadchan_flat_chan,
+         elec_nois = s4_rmvbadchan_noise_chan,
+         int_AF3:int_TP8)
+
+# Convert data to long format to get number of channels removed (80% threshold)
+chan_rmvthresh <- .90
+
+# Obtain the number of removed channels
+EEG_dat2$chan_rmv <- rowSums(select(EEG_dat2, int_AF3:int_TP8) > chan_rmvthresh)
+EEG_dat2$chan_rmv2 <- rowSums(select(EEG_dat2, int_AF3:int_TP8) > .99)
+
+# Dropping weird EEG recordings (64622 (2) is a duplicate of 64622- same data)
+EEG_dat2 <- EEG_dat2 %>% 
+  filter(!ID %in% c("64622 (2)",  # Redundant recording
+                    "9754341", # Not a real ID
+                    "Рюмина Е.Е.",  # Not a real ID
+                    "3973",  # Not a real ID
+                    "8222",  # Not a real ID
+                    "73780", # Exceedingly large low freq
+                    "61388" # Exceedingly large beta
+                    ))
+
+# Convert the ID variable into numeric
+EEG_dat2$ID  <- as.numeric(EEG_dat2$ID)
+
+# Combine this dataset to our other dataset with behavioral information
+dataL <- data %>%
+  full_join(EEG_dat2, by = "ID") %>%
+    data.frame() # Removes weird list at end of dataset
+
+```
+
+
+### Remove subjects that do not meet criteria
+
+This is the exclusion criteria:
+- Self-report injury
+- Epilepsy
+- ADD
+- Extremely poor spellers (more than 3 SD below the mean)
+- Too old compared to average (more than 3 Sd from the mean)
+- Do not have spelling data (this is information is needed to make spelling groups later on)
+- **Note**: Calculating z-scores must be done before removing any IDs from the dataset- this prevents recalculating z-scores and have another extreme value appear when previously it wasn't!
+
+*Update- modification occurred, we will now keep dyslexics and ppl with low performance on the CFIT in the data*
+
+We use the `slice_head()` function since this is information from level-2 predictors- this will speed up the code. 
+
+
+```{r keep non rejects subjects}
+# Slice the dataset so there is one row per subject
+sliced_data <- dataL %>%
+  select(S1:Dislexia) %>%
+  group_by(ID) %>%
+  slice_head(n=1) %>%
+  ungroup()
+
+# Scale some variables to later remove extremes
+sliced_data$TSEz <- scale(sliced_data$TSE)
+sliced_data$Agez <- scale(sliced_data$Age)
+
+# Create categorical variations of the variables above
+sliced_data$Too_bad_spll <- ifelse(sliced_data$TSE_theta  >=3 |  sliced_data$TSE_theta  <= -3 ,
+                                   "Y", "N")
+sliced_data$Too_old <- ifelse(sliced_data$Agez >=3 , "Y", "N")
+
+# Create a variable indicating if behavioral data is missing or not
+sliced_data$MissingSpell <- ifelse(is.na(sliced_data$SpellThta), "Y", "N")
+
+# Create an exclusion criteria for the behavioral data (Before accounting for noisy EEG data)
+sliced_data <- sliced_data %>%
+  mutate(Exclusion = case_when(
+    HeadTrauma == "Y" | 
+    Health2epilepsy == "Y" | 
+    Health2autism == "Y" |
+    ADD == "Y" |
+    Too_bad_spll == "Y" |
+    Too_old == "Y" | 
+    MissingSpell == "Y" ~ "Y",
+    TRUE ~ "N"
+  ))
+
+
+# Indicate our starting sample size
+cat("We are starting out with",length(unique(sliced_data$ID)),"unique ids that have at least one eyes open/closed rsEEG recording\n")
+
+# Express how many subjects are being removed for injury, epilepsy, or autism
+cat("We are removing",sum(sliced_data$Exclusion == "Y", na.rm = T),"participants for having head trauma, epilepsy, autism, ADD, extremly poor spellers (3SD +), or older than 3SD from the mean\n")
+
+# Create a table specifically for excluded subjects to clean and then report numbers
+Excluded <- sliced_data %>% filter(Exclusion == "Y") %>% select(HeadTrauma:Dislexia, Too_bad_spll, Too_old, MissingSpell) # We included dislexia here to report the numbers
+Included <- sliced_data %>% filter(Exclusion != "Y") 
+  
+# Clean the table a bit (convert NAs into N)
+Excluded[is.na(Excluded)] <- "N"
+
+# Quickly look at the frequency of responses for this dataset
+sapply(Excluded, function(x) table(x))
+
+# Report the number of unique IDs we have left
+cat("This leaves us with data from",nrow(Included),"participants who may or may not have an EEG recording\n")
+
+# Create a dataset that contains only participants that were not excluded
+data2L <- dataL %>%
+  filter(ID %in% Included$ID)
+
+# Everything checks out
+setdiff(Included$ID, data2L$ID)
+setdiff(data2L$ID, Included$ID)
+```
+
+### Early Demographics
+
+The demographics before we removed bad EEG recordings
+- The sample size for Age is three less than it should be because of NAs
+
+```{r initial demographics info}
+# slice the data again
+sliced_data_demo <- data2L %>%
+  group_by(ID) %>%
+  slice_head(n=1) %>%
+  ungroup()
+
+describe(sliced_data_demo$Age)
+round(prop.table(table(sliced_data_demo$Sex)),2)
+table(sliced_data_demo$Group)
+paste0(length(unique(sliced_data_demo$ID)), " unique IDs")
+
+```
+### Descriptives of QC of our EEG data (Eyes Closed Only)
+
+Below we can visualize different EEG QC measures to get a feel for how problematic EEG recordings were and in which aspect. 
+
+```{r descriptives of our EEG QC}
+# Aesthetics (Leo version)
+theme_clean <- function() {
+  theme_minimal() +
+    theme(legend.position = "bottom",
+          panel.grid.minor = element_blank(),
+          plot.title = element_text(hjust = 0.5))
+}
+
+plot_hist <- function(data, x){
+data %>%
+  ggplot(aes(x={{x}})) +
+  geom_histogram(fill = "grey", color = "black") +
+  theme_clean()
+ 
+}
+
+plot_bar <- function(data, x){
+EEG_QC_rec %>%
+  group_by({{x}}) %>%
+  summarise(Freq = length({{x}})) %>%
+  drop_na() %>%
+  ggplot(aes(x = {{x}}, y = Freq)) +
+  geom_col(fill = "grey", color = "black") +
+  scale_y_continuous(expand = c(0, 0), limits = c(0, NA)) +
+  theme_clean()
+ 
+}
+
+# Create a dataset where each row represents data from one condition recording
+EEG_QC_rec <- data2L %>%
+  group_by(ID) %>%
+  slice_head(n = 1) %>%
+  data.frame()
+
+# Create histograms plots of the different QC measures
+plot_hist(EEG_QC_rec, start_globvar) + labs(x = "Before Preprocessing Global Variance")
+plot_bar(EEG_QC_rec, chan_rmv) + labs(x = "Number of Noisy Channels Interpolated")
+plot_hist(EEG_QC_rec, trialpropremain) + labs(x = "Proportion of Trials Remaning")
+plot_hist(EEG_QC_rec, end_globvar) + labs(x = "After Preprocessing Global Variance")
+plot_hist(EEG_QC_rec, int_total) + labs(x = "Proportion of Recording Interpolated")
+plot_hist(EEG_QC_rec, end_trial) + labs(x = "Number of Trials After Preprocessing")
+```
+# Identifying how many recordings are good 
+
+Below we created the exclusion criteria for EEG recordings that will not be analyzed.
+
+```{r Identifying Good rsEEG Recordings}
+# Create to identify included vs excluded recordings
+apply_exclusion_criteria <- function(df, chan_num, end_trial, chan_rmv_prop) {
+  df$Not_Engh_EEG <- ifelse(df$end_trial < end_trial, "Y", "N")
+  df$Many_Chan_Intp <- ifelse(df$chan_rmv > round(chan_rmv_prop * chan_num), "Y", "N")
+  df %>% mutate(Exclusion = case_when(
+    Not_Engh_EEG == "Y"  | Many_Chan_Intp == "Y" ~ "Y",
+    TRUE ~ "N"
+  ))
+}
+
+# Set parameters for exclusion criteria
+channels <- 62
+trials_needed <- 30
+chann_int_prop <- .18
+
+# Apply our exclusion criteria to our data
+EEG_QC_rec2 <- apply_exclusion_criteria(EEG_QC_rec,
+                                        channels,
+                                        trials_needed,
+                                        chann_int_prop)
+
+# This seems reasonable
+cat("Recordings split by whether they have enough trials (min =",trials_needed,")\n")
+xtabs(~Not_Engh_EEG, EEG_QC_rec2)
+cat("\n\nRecordings split by whether they exceed accptable channel interpolation proportion from ",channels," channels (max =",chann_int_prop,")\n")
+xtabs(~Many_Chan_Intp, EEG_QC_rec2)
+cat("\n\nNumber and percentage of recordings that need to be excluded\n")
+xtabs(~Exclusion, EEG_QC_rec2)
+round(prop.table(xtabs(~Exclusion, EEG_QC_rec2)),2)
+
+# Remove the files that are marked for exclusion
+EEG_QC_rec3 <- filter(EEG_QC_rec2, Exclusion == "N")
+
+```
+
+
+# Creating a final dataset for analysis 
+
+Here we will remove variables that are not much of interest to us and introduce frequency band (FB) and topography as factors. Rows (observations) with Hz or electrodes that were not part of the FB or topography chosen were discarded. Thus, each person should have 12 observations (3 frequecies x 4 topographies)
+
+
+```{r Look at the power spectra of included recordings}
+# Good recording IDs + removing unwanted variables
+data3L <- data2L %>%
+  filter(ID %in% EEG_QC_rec3$ID) %>%
+  select(ID, Sex, Age, Group, SpellAb, SpellThta, Condition, channel, frequency, power) %>%
+  arrange(ID, frequency)
+
+
+# Creating frequency bands variable
+data4L <- data3L %>%
+  mutate(
+    FB = case_when(
+      frequency >= 0.5 & frequency <= 7.5 ~ "slow",
+      frequency >= 8 & frequency <= 12 ~ "alpha",
+      frequency >= 12.5 & frequency <= 34.5 ~ "beta",
+      TRUE ~ "ERROR"
+    ),
+    FB = factor(FB, levels = c("slow","alpha", "beta"))
+    )
+
+# Creating a topography variable (These are directly from Whitford's paper 2007)
+data4L <- data4L %>%
+  mutate(
+    topography = case_when(
+      channel %in% c("Fp1", "Fp2", "F7", "F3", "Fz", "F4", "F8", "FC3", "FCz", "FC4") ~ "frontal",
+      channel %in% c("T7", "TP7", "T8", "TP8") ~ "temporal",
+      channel %in% c("CP3", "CPz", "CP4", "P3", "Pz", "P4") ~ "parietal",
+      channel %in% c("O1", "Oz", "O2") ~ "occipital",
+      TRUE ~ NA_character_  # for any unmatched channels
+      ),
+    topography = factor(topography, levels = c("frontal", "temporal", "parietal", "occipital"))
+  )
+
+# Removing not necessary rows and columns to make the final dataset
+final_dat <- data4L %>%
+  drop_na(topography, FB) %>%
+  group_by(ID, FB, topography) %>%
+  mutate(mean_power = mean(power)) %>%
+  select(-channel, -frequency, -power) %>%
+  unique() %>%
+  ungroup()
+  
+# Getting some descriptions on our current dataset
+cat("We have",length(unique(final_dat$ID)),"IDs in our final dataset")
+cat("Each ID has this number of observations")
+xtabs(~ID, final_dat)[1]
+cat("What contributes to this observations are:")
+xtabs(~FB + topography + ID, filter(final_dat, ID == "10027"))
+```
+# Plotting the Power Spectra
+
+Below we can see that classic alpha peak that is a signature of eyes closed rsEEG.
+
+
+```{r Plotting the power spectra}
+# Create a plot for the average power spectra + grand average
+freq_mean_pow <- data4L %>%
+  group_by(frequency) %>%
+  summarise(mean_power = mean(power))
+
+# Visualizing the power spectra
+data4L %>%
+  group_by(ID, frequency) %>%
+  summarise(mean_power = mean(power), .groups = "drop") %>%   # drop grouping
+  ggplot(aes(x = frequency, y = mean_power, group = ID)) +
+  geom_line(color = "darkgrey", alpha = 0.7, size = 0.5) +
+  geom_line(data = freq_mean_pow, 
+            aes(x = frequency, y = mean_power), 
+            color = "black", size = 1.2, inherit.aes = FALSE) +
+  theme_clean()
+  
+
+# Getting z-scores within FB and plotting
+final_dat %>%
+  group_by(FB) %>%
+  mutate(power_z = scale(mean_power)) %>%
+  drop_na(FB) %>%
+  ggplot(aes(x = FB, y = power_z)) +
+  geom_boxplot() +
+  labs(x = "Frequency Bands", y = " Power (z-scores with Frequency Bands)") +
+  theme_classic() 
+
+# Create a plot for the average power spectra + grand average
+freq_mean_pow_top <- data4L %>%
+  group_by(frequency, topography) %>%
+  summarise(mean_power = mean(power)) %>%
+  drop_na()
+
+# Creating a variable for topography
+data4L %>%
+  group_by(ID, frequency, topography) %>%
+  summarise(mean_power = mean(power)) %>%
+  drop_na(topography) %>%
+  ggplot(aes(x= frequency, y = mean_power, group = ID)) +
+  geom_line(color = "darkgrey", alpha = 0.7, size = 0.5) +
+  geom_line(data = freq_mean_pow_top, 
+            aes(x = frequency, y = mean_power), 
+            color = "black", size = 1.2, inherit.aes = FALSE) +
+  facet_wrap(~topography, scales = "free") +
+  theme_clean()
+
+```
+
+
+
+# Visualizing the relationship with age
+
+Below we can see that our EEG data are pretty skewed. In Whitford's paper, the authors square root the power values to make the data more normal. In our case, our data is pretty extreme thus it would be advice to take the log transformation.
+
+```{r visualizing the relationship with age}
+# Create a custom function for scatterplots
+plot_scatr <- function(data, x, y) {
+ggplot(data,aes(x = {{x}}, y = {{y}})) +
+    geom_point(shape = 21,          # Creates circle with filling and border
+             fill = "darkgrey",   # Inner fill color
+             color = "black",     # Border color
+             size = 1,            # Point size (adjust for thicker border)
+             stroke = 1) +      # Border thickness (optional, default is 0.5)
+  theme_clean() 
+}
+
+# Create a function to plot a frequency band by topography
+plot_fb_top <- function(data, x, y, FB) {
+data_filt <- data %>%
+    filter(FB == !!FB) # To make it filter correctly
+
+plot1 <- data_filt %>%
+  plot_scatr({{x}}, {{y}}) +
+  facet_wrap(~topography, scales = "free") +
+  labs(title = paste("Frequency band:", FB))
+
+plot2 <- data_filt %>%
+  plot_hist({{y}}) +
+  facet_wrap(~topography) +
+  labs(title = paste("Distribution of:", FB))
+
+# Print out both plots
+plot1 + plot2
+}
+
+# Plot mean power regressed on age across topography for each FB
+plot_fb_top(final_dat, Age, mean_power, "slow")
+plot_fb_top(final_dat, Age, mean_power, "alpha")
+plot_fb_top(final_dat, Age, mean_power, "beta")
+
+# Plot it but sqrt transformed
+plot_fb_top(final_dat, Age, sqrt(mean_power), "slow")
+plot_fb_top(final_dat, Age, sqrt(mean_power), "alpha")
+plot_fb_top(final_dat, Age, sqrt(mean_power), "beta")
+
+# Plot it but log transformed
+plot_fb_top(final_dat, Age, log(mean_power), "slow")
+plot_fb_top(final_dat, Age, log(mean_power), "alpha")
+plot_fb_top(final_dat, Age, log(mean_power), "beta")
+
+
+```
+
+
+# Visualizing Our Predictor of Interest (Spelling Ability)
+
+When visualizing our predictor, we see that spelling ability and age are positively correlated, such that people in our sample that are older tended to perform better on the spelling task.
+
+```{r Visualizing Spelling Ability}
+# Create a dataset with level-2 predictors
+final_dat_sliced <- final_dat %>%
+  group_by(ID) %>%
+  slice_head(n=1) %>%
+  ungroup()
+
+# Print out spelling ability (theta values) regressed on age + distributions
+plot_scatr(final_dat, Age, SpellThta) + 
+  plot_hist(final_dat, SpellThta) + 
+  plot_bar(final_dat, Age)
+
+```
+
+
+# Create Spelling Performance Group Using Fitted Values from Quadratic to Plateau Model
+
+To address the concerns above, we can fit a quadratic to plateau model to model Spelling Ability as a function of Age. This will produce fitted values (aka the expected spelling score for each level of Age) that we can use to our advantage. We can take the difference of the observed value from the fitted value and then quantify this difference into quantiles. Those in the bottom 20% percentile will become the poor performance spellers while the rest will be the good performance spellers.
+
+
+```{r Creating a spelling group using quadratic to plateau models}
+# Load in the package
+library(nlraa)
+library(msm)
+
+# run a quadratic to plateau regression
+spell.nls <- nls(SpellThta ~ SSquadp3xs(Age, a, b, jp), 
+                 data = final_dat_sliced)
+
+# Using predict2_nls() function to get SE for fitted values across level of Age
+spell.nls.pred <- predict2_nls(spell.nls, newdata = NULL, interval = "confidence", level = 0.95)
+final_dat_sliced$SpellThta.fitted <- spell.nls.pred$Estimate
+
+# Create the grouping variable based on subjects with less than - 1.5 SE from the model
+final_dat_sliced <- final_dat_sliced %>%
+  mutate(SpellDiscrepency = SpellThta - SpellThta.fitted,
+         SpellThresh = quantile(SpellDiscrepency, 0.20), # 1-20% Percentile vs 20-100% percentile
+         SpellGroup = ifelse(SpellDiscrepency <= SpellThresh, "Poor", "Good"),
+         SpellGroup = factor(SpellGroup, levels = c("Poor", "Good")))
+
+# Add this information into the long final dataset
+final_dat <- final_dat %>%
+  left_join(select(final_dat_sliced, ID, SpellGroup),
+            by = "ID") %>%
+  data.frame()
+
+# View the number of participants in each group
+group.num <- xtabs(~SpellGroup, final_dat_sliced)
+group.prop <- sapply(round(prop.table(xtabs(~SpellGroup, final_dat_sliced)) * 100,1), function(x) paste0(x,"%"))
+
+# Create a caption for the model
+spl.coefs <- round(coef(spell.nls),2)
+spll.caption <- paste0("Intercept = ", spl.coefs[1], "; slope = ", spl.coefs[2], "; join point = ", spl.coefs[3],
+                       "; Good Spellers = ", group.num["Good"]," (",group.prop["Good"], ")",
+                       "; Poor Spellers = ", group.num["Poor"]," (",group.prop["Poor"],")")
+
+# Add the fitted values
+final_dat_sliced %>%  
+  ggplot(aes(x = Age, y = SpellThta, color = SpellGroup)) +
+  geom_jitter(width = .5, alpha = 0.6) +  # Added alpha for better visibility if overlapping
+  geom_line(aes(y = SpellThta.fitted), linewidth = 1.5, linetype = "dashed", color = "black") +
+  labs(
+    title = "Relationship between Spelling Ability and Age (By Spelling Group)",
+    y = "Spelling Ability (theta)",
+    caption = spll.caption) +
+  theme_clean() 
+
+```
+
+
+# Final Demographics
+
+Now that we have removed all problematic data and have all the variables of interest in our dataset, we can report on the final demographics and sample sizes for different groups in our data. It is a bit concerning that we have way more individuals who are younger than older- this may effect the standard errors of the parameters in our model 
+
+
+```{r Final demographics}
+cat("We have data for", length(unique(final_dat_sliced$ID)), "unique IDs")
+cat("This is the sex split for out sample")
+xtabs(~Sex, final_dat_sliced)
+cat("This is a table that was similarly used in Whitfords paper showing sample size by age groups")
+
+# Create an Age group variable to see our sample size across age when turned into a factor
+final_dat_sliced <- final_dat_sliced %>%
+  mutate(Age_group = case_when(
+    Age >= 15 & Age < 18 ~ "15-17",
+    Age >= 18 & Age < 21 ~ "18-21",
+    Age >= 21 & Age < 27 ~ "21-26",
+    Age >= 27 & Age <= 33 ~ "27-33",
+    TRUE ~ "ERROR"
+  ))
+
+# Print the sample size across different age groups
+xtabs(~Age_group, final_dat_sliced)
+
+# Print the sample size across different age groups plus spelling performance
+addmargins(xtabs(~Age_group + SpellGroup, final_dat_sliced))
+
+```
+
+
+### Visualize the Relationship Between Spelling and EEG power
+
+Visually it looks like spelling ability does not seem to be predictive at all of rsEEG absolute power. This is preparing us for the fact that we are very likely not going to see any differences between good and poor spellers- their EEG activity looks the same.
+
+```{r visualize the relationship between spelling ability and EEG power}
+# Create a custom function that plots mean_power regressed onto Age by spelling group
+plot_age_pwr_grp <- function(data, x, y, FB) {
+  data_filt <- filter(data, FB == !!FB)
+  data_filt %>%
+    ggplot(aes(x = {{x}}, y = {{y}}, color = SpellGroup)) +
+    geom_jitter(alpha = .5, size = .7) +
+    facet_wrap(~topography, scales = "free") +
+    labs(title = paste0("Frequency Band: ", FB)) +
+    theme_clean()
+}
+
+# Creating a custom function that turns Age into a factor with 5 levels
+# This is a really bad function but w/e
+plot_age_Q_pwr_grp <- function(data, x, y, FB) {
+  data %>%
+    mutate(Age_Q = cut({{ x }}, 
+                       breaks = quantile({{ x }}, probs = seq(0, 1, by = 0.2), na.rm = TRUE),
+                       include.lowest = TRUE,
+                       labels = c("Q1", "Q2", "Q3", "Q4", "Q5"))) %>%
+    filter(FB == !!FB) %>%
+    ggplot(aes(x = Age_Q, y = {{ y }}, fill = SpellGroup)) +
+    facet_wrap(~topography, scales= "free") +
+    geom_boxplot() +
+    labs(title = paste0("Frequency Band: ", FB)) +
+    theme_clean()
+}
+
+# Plot EEG power regressed by Age and Spelling Group for each FB
+plot_age_pwr_grp(final_dat, Age, log(mean_power), "slow") + geom_smooth(method = "lm", se = FALSE)
+plot_age_pwr_grp(final_dat, Age, log(mean_power), "alpha") + geom_smooth(method = "lm", se = FALSE)
+plot_age_pwr_grp(final_dat, Age, log(mean_power), "beta") + geom_smooth(method = "lm", se = FALSE)
+
+# Show the differences in EEG power by group
+plot_age_Q_pwr_grp(final_dat, Age, log(mean_power), "slow")
+plot_age_Q_pwr_grp(final_dat, Age, log(mean_power), "alpha")
+plot_age_Q_pwr_grp(final_dat, Age, log(mean_power), "beta")
+```
+
+
+### Replicating Findings from Whitford (2007)
+
+The goal here is to run the exact same statistics that was reported in Whitford et al. (2007) paper. They ran regular multiple regressions using data from 138 healthy participants. Specifically, they sqrt() transformed the power values and they log transformed the Age variable. They did this (specifically the transforming of the outcome) to have normal looking data so a regression would be appropriate (rather than a glm).
+
+Their multiple regression had the factors log(Age) and sex. They ran a single multiple regression for each EEG region (frontal, temporal, parietal, occipital) and frequency band (slow, alpha, beta) combination- no mixed models were used. Since this approach produces 12 p-values (if only interested in log(Age)), they used **alpha criterion level of 0.01**. 
+
+Thus, we will be fitting the following model 12 times and showcasing how well the model fit our data. We will be using the natural log instead because it does not make sense to interprent a sqrt() outcome of the residual assumptions are violated in the process.
+
+log(mean_power) ~ b0 + b1_sex + b2_log(age)
+
+Our results show something interesting. For starters, only the slow frequency band was predicted by log(Age), the other frequencies were not. This is very different from Whitford where basically every regression produced a significant log(age) at the 0.01 alpha criterion except for the Alpha/Frontal Lobe combination. Next, the produced QQ plots do not look so good- there are several cases where the relationship between the residual values and theoretical quantiles do not look linear. However, if we change our outcome from sqrt(mean_power) to log(mean_power), the Q-Q plots produced look much better. We might have to do this just because our data might be more skewed that the data used by Whitford.
+
+Just to check, we did log(mean_power) and ran the code below, the results are essentially the same except that alpha x parietal becomes significant. 
+
+```{r Running our quadratic to plateau model}
+# Load the gt package
+library(gt)
+
+# Create a function to generate a multiple logistic regression as in Whitford
+whit_lm <- function(data) {
+  mod <- lm(log(mean_power) ~ Sex + log(Age), data)
+  return(mod)
+}
+
+# Create a function to extract model information
+extract_lm <- function(lm){
+  lm_tidy <- broom::tidy(lm)
+  lm_age <- filter(lm_tidy, term == "log(Age)")
+  lm_age <- mutate(lm_age, significant = ifelse(p.value < .01, "Y", "N"))
+  lm_age_p <- mutate(lm_age, p.value = ifelse(p.value < .001, 
+                                              "< 0.001", 
+                                              as.character(round(p.value, 3))))
+  lm_age_final <- mutate_if(lm_age_p, is.numeric, ~round(., 3))
+
+}
+
+# Create a function to obtain QQ plots of each multiple regression
+plot_qq <- function(data, lm, topography) {
+  # Calculate the standardized residuals
+  data$rstandard <- rstandard(lm)
+  
+  # Plot the residuals against theoretical quantiles
+  data %>%
+    ggplot(aes(sample= rstandard)) +
+    geom_qq() +
+    stat_qq_line() +
+    geom_hline(yintercept = 3, color = "red") +
+    theme_classic() +
+    labs(x = "Theoretical Quantiles",
+         y = "Standardized\nResiduals",
+         title = paste0(topography)) +
+    theme_clean()
+}
+
+# Create a function to plot the QQ plots for a specified frequency band
+plot_fb_qq <- function(data, FB) {
+  data %>%
+  filter(FB == !!FB) %>%
+  pull(qq_plot) %>%
+  unlist(recursive = FALSE) %>%  # flattens the list of lists
+  wrap_plots(ncol = 2) +
+  plot_annotation(title = paste("Q-Q plot of standardized residuals with\nsuperimposed straight line:", FB))
+}
+
+# Create lm models for each of FB x topography combinations 
+lm_mod_fits <- final_dat %>%
+  mutate(FB = fct_relevel(FB, "slow", "alpha", "beta"),
+         topography = fct_relevel(topography, "slow", "parietal", "occipital")) %>%
+  arrange(FB, topography) %>%                 # Arranges row in the way we want 
+  nest(data = -c(FB, topography)) %>%        
+  mutate(lm = map(data, possibly(whit_lm, NA)),
+         qq_plot = pmap(list(data, lm, topography), plot_qq)) # pmap() handles more than 3 arguments
+
+
+# Extract the estimates from the multiple regression
+lm_estimates <- lm_mod_fits %>%
+  mutate(estimates = map(lm, possibly(extract_lm, NA))) %>%
+  unnest(estimates)
+  
+# Show the results 
+lm_estimates %>%
+  select(where(~ !is.list(.))) %>% # Remove all list columns
+  gt() %>%
+  tab_style(
+      style = cell_text(align = "center"),
+      locations = cells_body(columns = everything())
+    )
+
+
+# Show the Q-Q plots for each frequency band
+plot_fb_qq(lm_mod_fits, "slow")
+plot_fb_qq(lm_mod_fits, "alpha")
+plot_fb_qq(lm_mod_fits, "beta")
+```
+
+
+### Fitting Non-Random Quadratic to Plateau Models (EEG ~ Age)
+
+We will fit a quadratic to plateau model for each frequency x topography level combination. Thus, no random effects will need to be specified. This will give us a general understanding of how well these types of models fit our data. 
+
+Here we see that only two of the 12 models converged while the rest failed. However, this is also not the best way (I don't think) to specify a model.
+
+```{r Using findings to inform our model}
+# Load in package
+library(nlraa)
+
+# Create a custom function to run the quadratic to plateau model
+quad_mod_log <- function(data) {mod <- nls(log(mean_power) ~ SSquadp3xs(Age, a, b, jp), data = data)}
+
+# Running the quadratic to plateau models to see where they would converge
+quad_age <- final_dat %>%
+  nest(data = - c(topography, FB)) %>%
+  mutate(quad_mod = map(data, possibly(quad_mod_log, NA)))
+
+# Compare the models that converged by changing outcome scale
+quad_age
+
+# Create a function to print the summary of a model
+print_model_summary <- function(model) {
+  if (inherits(model, "nls")) {  # Checks if it's actually an nls object
+    summary(model)
+  } else {
+    NA
+  }
+}
+# Printing out the Quadratic to Plateau Models that Converged (No outcome transformation)
+lapply(quad_age$quad_mod, print_model_summary)
+
+```
+
+### Fitting Quadratic to Plateau Mixed-Effect Models (EEG ~ Age + Topography + (1|ID))
+
+From our results above, it looks like these types of models do not fit well when we run them one by one on each level combination of Frequency and Topography, with the exception of 'slow + temporal'. Now let's test whether we can increase our power by incorporating clustered data within topography. The benefits could be that we might be able to get significant findings and get models that converge rather only getting a couple like we did above.
+
+When we think about this model, we want the errors to fit nicely around our fitted values (our line of best fit). So when we think about this, we basically need out data to be parametric, and we can do this by log transforming our outcome. After fitting our model, we can plot the residuals to see if they are nicely around the fitted values or if there is heterogeneity.
+
+```{r Fitting a mixed model}
+# Center age and relevel the topography factor (make parietal last)
+final_dat <- final_dat %>%
+  mutate(Age_c = Age - min(Age),
+         topography_ec = factor(topography,
+                             levels = c("frontal", 
+                                        "temporal", 
+                                        "occipital", 
+                                        "parietal")))
+         
+# Create an effect coding matrix (contrast), label it, then add this to our data
+cmat <- contr.sum(4)
+dimnames(cmat) <- list(
+  rows = c("frontal", "temporal", "occipital", "parietal"),   
+  columns = c("frontal", "temporal", "occipital") 
+)
+contrasts(final_dat$topography_ec) <- cmat
+
+# Create a log version of mean power for each frequency
+final_dat <- final_dat %>%
+  group_by(FB) %>%
+  mutate(log_mean_power = log(mean_power))
+
+# Create three types of mixed quadratic to plateau models
+int_mod <- function(data) {
+  nlme(log_mean_power ~ SSquadp3xs(Age_c, a, b, xs),
+       data = data,                               # use the passed tibble
+       fixed = list(a ~ topography_ec, b ~ 1, xs ~ 1),
+       random = a ~ 1 | ID,
+       start = c(a = 3, 0, 0, 0,
+                 b = -1,
+                 xs = 28),
+       control = nlmeControl(msMaxIter = 2000))
+}
+
+
+int_slp_mod <- function(data) {
+  nlme(log_mean_power ~ SSquadp3xs(Age_c, a, b, xs),
+       data = data,
+       fixed = list(a ~ topography_ec, b ~ topography_ec, xs ~ 1),
+       random = a ~ 1 | ID,
+       start = c(a = 4, 0, 0, 0,
+                 b = -1, 0, 0, 0,
+                 xs = 27.86),
+       control = nlmeControl(msMaxIter = 2000))
+}
+
+int_slp_jp_mod <- function(data) {
+  nlme(log_mean_power ~ SSquadp3xs(Age_c, a, b, xs),
+       data = data,
+       fixed = list(a ~ topography_ec, b ~ topography_ec, xs ~ topography_ec),
+       random = a ~ 1 | ID,
+       start = c(a = 4, 0, 0, 0,
+                 b = -1, 0, 0, 0,
+                 xs = 27.86, 0, 0, 0),
+       control = nlmeControl(msMaxIter = 2000))
+}
+
+# Nest the data by frequency band
+FB_mods  <- final_dat %>%
+  nest(data = -FB) %>%
+  mutate(int_mod = map(data, possibly(int_mod, NA)),
+         int_slp_mod = map(data, possibly(int_slp_mod, NA)),
+         int_slp_jp_mod = map(data, possibly(int_slp_jp_mod, NA)))
+
+
+# Visually inspect to see which models converged
+FB_mods
+
+# Do model comparison to see which one to interpret
+anova(FB_mods$int_mod[[1]], FB_mods$int_slp_mod[[1]], FB_mods$int_slp_jp_mod[[1]]) # Mod2
+anova(FB_mods$int_mod[[2]], FB_mods$int_slp_mod[[2]], FB_mods$int_slp_jp_mod[[2]]) # Mod1
+anova(FB_mods$int_mod[[3]]) # Mod1
+
+# Save the best mod into an object
+slow_mod <- FB_mods$int_slp_mod[[1]]
+alpha_mod <-FB_mods$int_mod[[2]]
+beta_mod <- FB_mods$int_mod[[3]]
+
+# Plot the residuals of each once
+plot(slow_mod); plot(alpha_mod); plot(beta_mod)
+```
+ ### Printing out the best models
+ 
+ From our three models below, only the slow FB has results that are of any interest- their intercept, slope and join points are all significant. For the other two models, both the slope and join point are not significant- thus there is no real point in continuing the quadratic to plateau model with these datasets.
+ 
+
+```{r Printing out best fitting model for each frequency band}
+# Print out the best fitting models
+summary(slow_mod)
+summary(alpha_mod)
+summary(beta_mod)
+
+
+```
+### Fitting the final models
+
+We will use a quadratic to plateau model for the slow frequency band data, but for alpha and beta we will use a polynomial instead or many even regular regression idk.
+
+
+```{r Looking for group differences using quadratic to plateau models}
+# Create a dataset just for slow waves
+slow_dat <- filter(final_dat, FB == "slow")
+
+# Final model for looking at group differences in 
+final_slow_mod <-  nlme(log_mean_power ~ SSquadp3xs(Age_c, a, b, xs),
+       data = slow_dat,
+       fixed = list(a ~ topography_ec + SpellGroup, 
+                    b ~ topography_ec + SpellGroup, 
+                    xs ~ topography_ec + SpellGroup),
+       random = a ~ 1 | ID,
+       start = c(a = 4, 0, 0, 0, 0,
+                 b = -1, 0, 0, 0, 0, 
+                 xs = 27.86, 0, 0, 0, 0),
+       control = nlmeControl(msMaxIter = 2000))
+
+
+# Create a dataset for the higher frequencies
+alpha_dat <- filter(final_dat, FB == "alpha")
+beta_dat <- filter(final_dat, FB == "beta")
+
+
+# Final model for looking at group differences in alpha
+library(lmerTest)
+final_alpha_mod <- lmer(log(mean_power) ~ poly(Age_c, 2) + topography_ec + SpellGroup + (1|ID), 
+                        data = alpha_dat)
+final_beta_mod <- lmer(log(mean_power) ~ poly(Age_c, 2) + topography_ec + SpellGroup + (1|ID), 
+                       data = beta_dat)
+
+# View the residuals of each model
+plot(final_slow_mod); plot(final_alpha_mod); plot(final_beta_mod)
+```
+
+```{r Visualize the data}
+# Create a grid that has the predictor values we want for corresponding fitted values
+newdat <- expand.grid(
+  Age_c = seq(min(slow_dat$Age_c), max(slow_dat$Age_c), length.out = 100),
+  topography_ec = levels(slow_dat$topography_ec),  
+  SpellGroup = levels(slow_dat$SpellGroup)  
+)
+
+# Add the predicted values back into the grid + adjust the age and relevel topography
+newdat <- newdat %>%
+  mutate(pred = predict(final_slow_mod, newdata = newdat, level = 0),
+         Age = Age_c + 15,
+         topography = factor(topography_ec,
+                             levels = c("frontal", "temporal", "parietal", "occipital")))
+
+# Plot the predicted values over the data
+plot_age_pwr_grp(final_dat, Age, log(mean_power), "slow") +
+  geom_line(data = newdat, aes(x = Age, y = pred, color = SpellGroup), size = 1) +
+  labs(y = "Predicted log(Power)", x = "Age (Years)", 
+       title = "Model-predicted trajectories by spelling group across topography") 
+
+```

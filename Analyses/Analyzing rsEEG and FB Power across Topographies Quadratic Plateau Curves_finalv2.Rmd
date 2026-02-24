@@ -1,0 +1,1605 @@
+---
+title: "Analyzing resting-state EEG and Spelling Performance in Young Adults (Quadratic Plateau) VERSION2"
+author: "Leandro Ledesma"
+date: "2026-01-29"
+output: html_document
+---
+
+**DISCLAIMER: Code compatible to run on the SAS 9 Computer** 
+
+
+**This is supposed to be a shorter version (summary) of the Rmarkdown with the original analysis**
+
+### Universal block code settings
+
+```{r setup}
+knitr::opts_chunk$set(echo = FALSE)
+knitr::opts_chunk$set(message = FALSE)
+knitr::opts_chunk$set(comment = NULL)
+knitr::opts_chunk$set(warning = FALSE)
+
+```
+
+### Loading in packages
+
+```{r loading in the packages, warning = FALSE}
+library(tidyverse)
+library(ggplot2)
+library(readxl)
+library(kableExtra)
+library(broom) # Converts regression outputs into dataframes using the tidy() function
+library(psych)
+library(MASS, exclude = "select") # This package is loaded with QuantPsyc, must exclude "select" or you wont be able to use it. 
+library(QuantPsyc) # Can use the lm.beta function to calculate the standardized betas
+library(car) # To calculate VIF
+library(performance) # ICC 
+library(lme4) #glmer
+library(interactions) # interact_plot
+library(emmeans)
+library(effects) #plot(allEffects(model))
+library(sjPlot) # plot_model
+library(MuMIn)
+library(lmtest)
+library(patchwork)
+library(nlme) #gnls()
+library(soiltestcorr) # quadratic_plateau()
+library(mirt)
+```
+
+
+### Loading in our data and doing some data cleaning
+
+Here we are loading demographic and medical information 
+
+- demographic information (age, sex)
+- Medical information (to remove DD or head injuries)
+
+After some minor data cleaning we combine the information into one dataset. 
+
+If there are NAs in the ID variable then those observations (rows) get dropped and any IDs that do not correspond to the first study (there are three of them) will also be removed.
+
+
+```{r load in the predictors covariates and outcome data, warning= FALSE}
+# Set the working directory
+Mega <- '\\\\files.times.uh.edu/labs/MIR_Lab/MEGAGRANT/STUDY 1/FINAL_DS'
+setwd(Mega)
+
+# load data
+demo <- read_excel("Demo/MegaGrant_TBL_Database_Newest_MCh with duration.xlsx")
+Medical <- read_excel("Medical_History/TBL_WHOQOL_BRIEF_Medical_S1_S3_DM_06.xlsx",  sheet = "med s1")
+
+# Selec variables of interes
+demo <- demo %>%
+  select(S1 = `S1 reg-list`,
+         ID, 
+         Sex, 
+         Age, 
+         Group) %>%
+  mutate(ID = as.numeric(ID),
+         Age = as.numeric(Age)) 
+Medical2 <- select(Medical, ID, HeadTrauma, Health2epilepsy, Health2autism, ADD, Dislexia)
+
+
+### Combine the dataset into one
+data <- demo %>%
+  full_join(Medical2, by = "ID")
+
+# Drop any NA's from the following variables
+data <- drop_na(data, ID)
+
+# Keep subjects only from study 1
+data <- data %>%
+  filter(S1 == "+")
+```
+
+
+### Loading in the ARFA Spelling data
+
+- Here we will be loading ARFA spelling error data. This data has already been processed from an earlier script where each item had the potential to have several different types of errors. For example, each item had 7 variables where scores were given to indicate errors or even Russian words were used. No errors were rows where each of the 7 variables had all 0's, which was most of the dataset. What we are loading in below are **sum of errors for each item** capped at two (0, 1, 2). We capped it at two because that was recommended to us.
+
+
+```{r loading and scoring ARFA spelling}
+# Set the working directory
+Mega <- '\\\\files.times.uh.edu/labs/MIR_Lab/MEGAGRANT/STUDY 1/FINAL_DS'
+setwd(Mega)
+
+# Load in errors for each item
+ARFA <- read.csv("ARFA/ARFA.Spelling.Raw.Scores.csv")
+
+# Rename the variables
+names(ARFA) <- c("ID", paste0("SP_ER",1:22), "Total_Error")
+```
+
+### Visualizing the ARFA Spelling Data
+
+Below we can visualize the distribution of total item error score (not the same as total number of incorrect items). Additionally, we can see the frequency of the number of errors by item.
+
+```{r Visualize the ARFA spelling data}
+# Aesthetics (Leo version)
+theme_clean <- function() {
+  theme_minimal() +
+    theme(legend.position = "bottom",
+          panel.grid.minor = element_blank(),
+          plot.title = element_text(hjust = 0.5)) 
+}
+
+# Create a summary table for Total Errors Score 
+library(gt)
+
+describe(ARFA$Total_Error) %>%
+  round(2) %>%
+  gt() %>%
+  tab_header(title = "Descriptive Statistics of Spelling Total Error Score") %>%
+  tab_style(
+    style = cell_text(align = "center"),
+    locations = cells_body(columns = everything()))
+
+# Number of unique IDs plus min and max scores
+unique_Ids <- length(unique(ARFA$ID))
+min_score <- min(ARFA$Total_Error)
+max_score <- max(ARFA$Total_Error)
+
+# Create a histogram of raw error sum score
+ARFA %>%
+  ggplot(aes(x = Total_Error)) +
+  geom_histogram(color = "black", fill = "white", bins = 20) +
+  labs(title = paste0("Total Spelling Item Error Score Distribution\n(n= ", unique_Ids,
+                      "; min = ",min_score,"; max = ",max_score,")")) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.05))) +
+  labs(x = "Total Spelling Error", y = NULL) +
+  theme_clean()
+
+# Create a data frame with frequency of error by item
+item_err_freq <- ARFA %>%
+  select(- Total_Error) %>%
+  pivot_longer(cols = -ID,
+               names_to = "Items",
+               values_to = "Error") %>%
+  group_by(Items, Error) %>%
+  summarise(count = length(ID)) %>% 
+  mutate(Error = factor(Error)) %>%
+  ungroup()
+
+# Create a factor with the levels of interest for plotting purposes
+item_err_freq <- item_err_freq %>%
+  mutate(Items = factor(Items, levels = paste0("SP_ER",22:1)),
+         Error = factor(Error, levels = c("2", "1", "0")))
+
+# Generate a plot
+item_err_freq %>%
+  ggplot(aes(x = Items, y = count, fill = Error)) +
+  geom_col() +
+  theme_clean() +
+  scale_fill_brewer(palette = "Paired") +
+  labs(title = "Frequency of Number of Errors by Item") +
+  coord_flip()
+
+
+```
+
+### Running a Graded Response Model (Item Reponse Theory Model)
+
+We technically already did this in another R script. However, we will be redoing it again here to explain exactly how the process works better. Essentially, from the graphs above, we can see that each item contains 3 different types of categories (no mistakes = 0, one mistake = 1, at least two mistakes = 2). Thus, we can use a **graded response model** to basically estimate difficulty and discrimination parameters for each item. Additionally, we can extract standardized error scores for each observation (ID), which we will use as a precursor for our predictor of interest.
+
+The model produces standardized error scores, but then we multiplied these values by **negative one** to turn them into accuracy measures. Afterwards, we introduce these values into our main dataset with demographic and medical information. 
+
+What is plotted are the original theta values that represent errors. Additionally we show another plot that shows the graded response model parameters, indicating item level information. Unfortunately, I have no idea how to interpret these values.
+
+```{r Running an IRT Model}
+# Extract just the ARFA items
+ARFA_items <- select(ARFA, SP_ER1:SP_ER22) 
+
+# Specify the model
+mod <- paste0("F = 1-", length(ARFA_items))
+
+# Run the mirt model and produce the theta scores
+fit_mirt <- mirt(ARFA_items, model = mod, itemtype = "graded", SE = TRUE, technical = list(NCYCLES = 20000))
+
+# Extract the theta (standardized) values and save them into the ARFA dataset
+ARFA$theta_error <- c(fscores(fit_mirt, method = "EAP"))
+min_score = round(min(ARFA$theta_error), 2)
+max_score = round(max(ARFA$theta_error), 2)
+
+# Visualize the ARFA scores
+ARFA %>%
+  ggplot(aes(x = theta_error)) +
+  geom_histogram(color = "black", fill = "white", bins = 20) +
+  labs(title = paste0("Standardized Spelling Error Score (Theta) Distribution\n(n= ", unique_Ids,
+                      "; min = ",min_score,"; max = ",max_score,")")) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.05))) +
+  labs(x = "Total Spelling Error", y = NULL) +
+  theme_clean()
+
+# Convert the error score into a performance score instead
+ARFA$theta_good <- ARFA$theta_error * -1 
+
+# Introduce this information into our dataset
+data <- data %>%
+  left_join(select(ARFA, ID, theta_good), by = "ID")
+
+# Visualizing Graded Response Model Item Parameters
+coeff_grm <- coef(fit_mirt, IRTpars = TRUE, simplify = TRUE)$items
+coeff_grm <- as.data.frame(coeff_grm)
+coeff_grm$var <- row.names(coeff_grm)
+
+coeff_grm_long <-  coeff_grm %>%
+  pivot_longer(cols = c(a:b2),
+                 names_to = "Parameters_Detailed",
+                 values_to = "Estimates") %>%
+  mutate(Parameters = ifelse(Parameters_Detailed == "a", "Discrimination (a)", "Difficulty (b)"),
+         Parameters = factor(Parameters, levels = c("Discrimination (a)",  "Difficulty (b)")),
+         Items = factor(var, levels = paste0("SP_ER",22:1)))
+
+coeff_grm_long %>%
+  ggplot(aes(x = Items, y = Estimates, color = Parameters_Detailed)) + 
+  geom_point(size = 2.5, alpha = .7) +
+  geom_hline(yintercept = 0) +
+  coord_flip() +
+  facet_grid(~Parameters) +
+  labs(title = "Graded Response Model Item Parameters",
+       color= "Parameters") +
+  theme_clean()
+
+```
+
+### Loading EEG Information 
+
+Here we are loading two types of EEG information:
+
+- Individual power spectra (FFT) of rsEEG recordings
+- An EEG quality control (QC) CSV 
+
+The **power spectra** holds information of our resting-state EEG outcome. The analysis in subsequent sections will be attempting to explain the variance of this for the several frequency bands. The QC will be used to remove recordings that were problematic during the preprocessing stage- this occurs in the next section.
+
+During this data cleaning code section, we are:
+
+- Identifying two rsEEG recordings that need to be renamed
+- Removing data from 5 recordings, one which was redundant, four because they were not real IDs (not sure what they are)
+- Use interpolated channel x trial segments to identify channels as 'bad' (e.g., if 90% of the channel was interpolated then we should mark that as a bad channel)
+
+The information in this section should **not** count toward reporting 'x' number of IDs removed
+
+```{r Load and preprocess EEG data}
+# Get the pathways to where the EEG data is saved
+eegPath <- "Y:/FINAL_DS/EEG/rsEEG"
+
+# Get all file names and create an empty list
+all_fft_files <- list.files(path = file.path(eegPath, "fft"), pattern = "fft")
+all_fft_files_full <- file.path(eegPath, "fft", all_fft_files)
+all_files_list <- list()
+
+# Read in each file one by one and save within a list
+for(ii in 1:length(all_fft_files)){
+  # Read in the file
+  read_file <- read.csv(all_fft_files_full[ii])
+  # Saves the file name within the file
+  read_file$filename <- all_fft_files[ii]
+  # Save the recording into a list
+  all_files_list[[ii]] <- read_file
+  names(all_files_list)[ii] <- all_fft_files[ii]
+}
+
+# Combine the FFT files into one dataset
+FFT_dat <- do.call(rbind, all_files_list)
+
+# Create a function that accurately extracts the ID of the file
+clean_eeg_ids <- function(x) {
+  x_gsub <- gsub("_preproc_fft.csv|EyesClosed|_RAW|_ RAW|RAW_|_", "", x)
+  return(x_gsub)
+}
+
+# Recover the ID for each recording + specify condition
+FFT_dat <- FFT_dat %>%
+  mutate(ID = clean_eeg_ids(filename),
+         Condition = ifelse(grepl("Open", filename), "Open", "Closed"))
+
+# load in the EEG QC
+EEG_QC <- read.csv(file.path(eegPath, "EEG_Preprocessing_Summary_Statistics_EC.csv"))
+
+# Delete weird column that has duplicate from one file (idk how that happened maybe parallel processing bug)
+#EEG_QC <- select(EEG_QC, - s14_eegvarsum_chanvar, - s14_eegvarsum_globalvar)
+
+# Use the same cleaning as above on this data
+EEG_QC <- EEG_QC %>%
+  mutate(ID = clean_eeg_ids(subject),
+         Condition = ifelse(grepl("Open", subject), "Open", "Closed"))
+
+# Join the datasets together
+EEG_dat <- FFT_dat %>%
+  full_join(EEG_QC, by = c("ID", "Condition"))
+
+
+# Read in the EEG mismatch dataset
+eeg_mismatch <- read_excel(file.path(eegPath, "MegaGrant_TBL.xlsx"))
+
+# Data cleaning
+eeg_mismatch <- select(eeg_mismatch, ID, RAW)
+eeg_mismatch <- drop_na(eeg_mismatch, RAW)
+
+# Identify which rsEEG recordings need to have their ID renamed
+newEEGIDs <- setdiff(eeg_mismatch$RAW, eeg_mismatch$ID)
+newEEGIDs_df <- eeg_mismatch[eeg_mismatch$RAW %in% newEEGIDs,]
+cat("rsEEG IDs that need to be renamed (RAW -> ID)\n\n")
+newEEGIDs_df
+
+# Change the RAW eeg IDs to their correct names
+mapping <- setNames(newEEGIDs_df$ID, newEEGIDs_df$RAW)
+EEG_dat <- EEG_dat %>%
+  mutate(ID = if_else(ID %in% names(mapping), 
+                      mapping[ID], 
+                      ID))
+
+# Checking to see if it worked
+cat("It it should say 0 below if it worked and IDs were renamed\n\n")
+sum(newEEGIDs_df$RAW %in% unique(EEG_dat$ID))
+
+# Create new variables for the EEG dataset
+EEG_dat$trialsrmv <- EEG_dat$s5_rjctbadtrials_initialtrials - EEG_dat$endTrialnum # This is accurate
+EEG_dat$trialpropremain <- round(EEG_dat$endTrialnum/EEG_dat$s5_rjctbadtrials_initialtrials,3)
+
+# EEG Cleaning- keeping only the variables that we care about 
+EEG_dat2 <- EEG_dat %>% 
+  select(ID, 
+         Condition, 
+         start_trial = s5_rjctbadtrials_initialtrials,
+         start_globvar = s2_eegvarsum_globalvar,
+         trialsrmv,
+         end_trial = endTrialnum,
+         trialpropremain,
+         end_globvar = s10_eegvarsum_globalvar,
+         int_total,
+         channel,
+         frequency,
+         power,
+         elec_pop = s4_rmvbadchan_pop_chan,
+         elec_flat = s4_rmvbadchan_flat_chan,
+         elec_nois = s4_rmvbadchan_noise_chan,
+         int_AF3:int_TP8)
+
+# Convert data to long format to get number of channels removed (80% threshold)
+chan_rmvthresh <- .90
+
+# Obtain the number of removed channels
+EEG_dat2$chan_rmv <- rowSums(select(EEG_dat2, int_AF3:int_TP8) > chan_rmvthresh)
+EEG_dat2$chan_rmv2 <- rowSums(select(EEG_dat2, int_AF3:int_TP8) > .99)
+
+# Dropping weird EEG recordings (64622 (2) is a duplicate of 64622- same data)
+EEG_dat2 <- EEG_dat2 %>% 
+  filter(!ID %in% c("64622 (2)",  # Redundant recording
+                    "9754341", # Not a real ID
+                    "Рюмина Е.Е.",  # Not a real ID
+                    "3973",  # Not a real ID
+                    "8222"  # Not a real ID
+                    ))
+
+# Convert the ID variable into numeric
+EEG_dat2$ID  <- as.numeric(EEG_dat2$ID)
+
+# Combine this dataset to our other dataset with behavioral information
+dataL <- data %>%
+  full_join(EEG_dat2, by = "ID") %>%
+    data.frame() # Removes weird list at end of dataset
+
+```
+
+
+### Remove subjects that do not meet criteria (Behaviorally)
+
+This is the exclusion criteria:
+- Self-report injury
+- Epilepsy
+- ADD
+- Too old compared to average (more than 3 Sd from the mean)
+- Do not have spelling data (this is information is needed to make spelling groups later on)
+- **Note**: Calculating z-scores must be done before removing any IDs from the dataset- this prevents recalculating z-scores and have another extreme value appear when previously it wasn't!
+
+*Update- modification occurred, we will now keep dyslexics and ppl with low performance on the CFIT in the data*
+
+We use the `slice_head()` function since this is information from level-2 predictors- this will speed up the code. 
+
+Here we will be removing subjects that do not meet the behavior criteria. There is another section that will follow where we further exclude subjects who do not have adequate EEG data.
+
+
+```{r keep non rejects subjects}
+# Slice the dataset so there is one row per subject
+sliced_data <- dataL %>%
+  select(S1:theta_good) %>%
+  group_by(ID) %>%
+  slice_head(n=1) %>%
+  ungroup()
+
+# Scale some variables to later remove extremes
+sliced_data$Agez <- scale(sliced_data$Age)
+
+# Create categorical variations of the variables above
+sliced_data$Too_old <- ifelse(sliced_data$Agez >=3 , "Y", "N")
+
+# Create a variable indicating if behavioral data is missing or not
+sliced_data$MissingSpell <- ifelse(is.na(sliced_data$theta_good), "Y", "N")
+
+# Create an exclusion criteria for the behavioral data (Before accounting for noisy EEG data)
+sliced_data <- sliced_data %>%
+  mutate(Exclusion = case_when(
+    HeadTrauma == "Y" | 
+    Health2epilepsy == "Y" | 
+    Health2autism == "Y" |
+    ADD == "Y" |
+    Too_old == "Y" | 
+    MissingSpell == "Y" ~ "Y",
+    TRUE ~ "N"
+  ))
+
+
+# Indicate our starting sample size
+cat("We are starting out with",length(unique(sliced_data$ID)),"unique ids that have at least one eyes open/closed rsEEG recording\n")
+
+# Express how many subjects are being removed for injury, epilepsy, or autism
+cat("We are removing",sum(sliced_data$Exclusion == "Y", na.rm = T),"participants for having head trauma, epilepsy, autism, ADD, extremly poor spellers (3SD +), or older than 3SD from the mean\n")
+
+# Create a table specifically for excluded subjects to clean and then report numbers
+Excluded <- sliced_data %>% filter(Exclusion == "Y") %>% select(HeadTrauma:Dislexia, Too_old, MissingSpell) # We included dislexia here to report the numbers
+Included <- sliced_data %>% filter(Exclusion != "Y") 
+  
+# Clean the table a bit (convert NAs into N)
+Excluded[is.na(Excluded)] <- "N"
+
+# Quickly look at the frequency of responses for this dataset
+sapply(Excluded, function(x) table(x))
+
+# Report the number of unique IDs we have left
+cat("This leaves us with data from",nrow(Included),"participants who may or may not have an EEG recording\n")
+
+# Create a dataset that contains only participants that were not excluded
+data2L <- dataL %>%
+  filter(ID %in% Included$ID)
+
+# Everything checks out
+setdiff(Included$ID, data2L$ID)
+setdiff(data2L$ID, Included$ID)
+```
+
+### Early Demographics
+
+The demographics before we removed bad EEG recordings
+- The sample size for Age is three less than it should be because of NAs
+
+```{r initial demographics info}
+# slice the data again
+sliced_data_demo <- data2L %>%
+  group_by(ID) %>%
+  slice_head(n=1) %>%
+  ungroup()
+
+describe(sliced_data_demo$Age)
+round(prop.table(table(sliced_data_demo$Sex)),2)
+table(sliced_data_demo$Group)
+paste0(length(unique(sliced_data_demo$ID)), " unique IDs")
+
+```
+### Descriptives of QC of our EEG data (Eyes Closed Only)
+
+Below we can visualize different EEG QC measures to get a feel for how problematic EEG recordings were and in which aspect. These QC metrics were derived from MATLAB preprocessing code where custom functions were used to identify number of bad channels, trials, and overall data interpolation. With the exception of bad trials that used a threshold of SD =4, every other metric used a threshold of SD = 5. Specifically, this was using robust zscores since they are less likely to be inflated by skewed data.
+
+```{r descriptives of our EEG QC}
+# Aesthetics (Leo version)
+theme_clean <- function() {
+  theme_minimal() +
+    theme(legend.position = "bottom",
+          panel.grid.minor = element_blank(),
+          plot.title = element_text(hjust = 0.5))
+}
+
+plot_hist <- function(data, x){
+data %>%
+  ggplot(aes(x={{x}})) +
+  geom_histogram(fill = "grey", color = "black") +
+  theme_clean()
+ 
+}
+
+plot_bar <- function(data, x){
+EEG_QC_rec %>%
+  group_by({{x}}) %>%
+  summarise(Freq = length({{x}})) %>%
+  drop_na() %>%
+  ggplot(aes(x = {{x}}, y = Freq)) +
+  geom_col(fill = "grey", color = "black") +
+  scale_y_continuous(expand = c(0, 0), limits = c(0, NA)) +
+  theme_clean()
+ 
+}
+
+# Create a dataset where each row represents data from one condition recording
+EEG_QC_rec <- data2L %>%
+  group_by(ID) %>%
+  slice_head(n = 1) %>%
+  data.frame()
+
+# Create histograms plots of the different QC measures
+plot_hist(EEG_QC_rec, start_globvar) + labs(x = "Before Preprocessing Global Variance")
+plot_bar(EEG_QC_rec, chan_rmv) + labs(x = "Number of Noisy Channels Interpolated")
+plot_hist(EEG_QC_rec, trialpropremain) + labs(x = "Proportion of Trials Remaning")
+plot_hist(EEG_QC_rec, end_globvar) + labs(x = "After Preprocessing Global Variance")
+plot_hist(EEG_QC_rec, int_total) + labs(x = "Proportion of Recording Interpolated")
+plot_hist(EEG_QC_rec, end_trial) + labs(x = "Number of Trials After Preprocessing\n(4 Second Trials)")
+```
+
+#### Identifying how many EEG recordings are good 
+
+Below we created the exclusion criteria for EEG recordings that will not be analyzed. Also anyone missing EEG data will be removed. While mixed-effects models can handle missing data, we cannot for certain state that these data were missing at random and also around 80 something files are missing EEG or their EEG data did not make the cut. I don't think we need to rely on this information for our analysis.
+
+Below we specified what makes a good recording. The recordings need to:
+
+- Have less than 18% of channels be interpolated or marked as bad. Since there are 62 channels in each recording, 62 * .18 = 11.16. Thus, if a recording has 12 or more bad channels they will not be used for analysis.
+- Have at least 30 trials, each being 4 seconds long, which will result in 2 minutes worth of EEG recordings.
+- Have missing EEG data, they will be fully removed.
+- And if their ending global variance is larger than 4 robust z-scores then they will be removed. This means that we calculate the MAD score instead of the standard deviation, which is more robust to outliers, and multiply this value by 4 and add it to the mean of ending global variance. Any recordings with an ending global variance that exceeds this threshold will be removed.
+
+```{r Identifying Good rsEEG Recordings}
+# Create to identify included vs excluded recordings
+apply_exclusion_criteria <- function(df, chan_num, end_trial, chan_rmv_prop) {
+  df$Not_Engh_EEG <- ifelse(df$end_trial < end_trial, "Y", "N")
+  df$Many_Chan_Intp <- ifelse(df$chan_rmv > round(chan_rmv_prop * chan_num), "Y", "N")
+  df$Missing_EEG <- ifelse(is.na(df$power), "Y", "N")
+  df$HigEndVar <- ifelse(df$end_globvar > mean(df$end_globva, na.rm  = T) + 4 * mad(df$end_globva, na.rm = T), "Y", "N")
+  
+  df %>% mutate(Exclusion = case_when(
+    Not_Engh_EEG == "Y"  | Many_Chan_Intp == "Y"  | Missing_EEG == "Y" | HigEndVar == "Y" ~ "Y",
+    TRUE ~ "N"
+  ))
+}
+
+# Set parameters for exclusion criteria
+channels <- 62
+trials_needed <- 30
+chann_int_prop <- .18
+
+# Apply our exclusion criteria to our data
+EEG_QC_rec2 <- apply_exclusion_criteria(EEG_QC_rec,
+                                        channels,
+                                        trials_needed,
+                                        chann_int_prop)
+
+
+# This seems reasonable
+cat("Recordings split by whether they have enough trials (min =",trials_needed,")\n")
+xtabs(~Not_Engh_EEG, EEG_QC_rec2)
+cat("\n\nRecordings split by whether they exceed acceptable channel interpolation proportion from ",channels," channels (max =",chann_int_prop,")\n")
+xtabs(~Many_Chan_Intp, EEG_QC_rec2)
+cat("\n\nHad an ending global variance that exceeded 4 MAD above the mean\n")
+xtabs(~HigEndVar, EEG_QC_rec2)
+cat("\n\nIDs that did not have EEG data at all\n")
+xtabs(~Missing_EEG, EEG_QC_rec2)
+cat("\n\nNumber and percentage of recordings that need to be excluded\n")
+xtabs(~Exclusion, EEG_QC_rec2)
+round(prop.table(xtabs(~Exclusion, EEG_QC_rec2)),2)
+
+# Remove the files that are marked for exclusion
+EEG_QC_rec3 <- filter(EEG_QC_rec2, Exclusion == "N")
+
+# Check for missing data
+cat("\n\nMissing data of the observations (IDs) that will be used in the final analysis\n")
+sapply(EEG_QC_rec3, function(x) sum(is.na(x)))
+
+```
+
+
+
+# Introducing Topography and Frequency Band Variables
+
+We will start with the information present in the data frame that was created in the previous section. We will use the IDs that basically 'survived' for having adequate behavioral and EEG data and use that as an index for the dataset that contains all of the within-individual (group) variables (e.g. channels, frequency).
+
+Here we will remove variables (columns) that are not much of interest to us and introduce frequency band (FB) and topography as factors. These factors are designed to simply our data, since right now each recording has power values across individual frequencies (this is also called the **Power Spectra Density**) for each of the 62 electrodes. Eventually we will use these factors to reduce the dimensions of the data, but for now we used the `summary()` function in combination with the `group_by()` function to keep the same dimension. This is so that in subsequent sections we can plot the power spectra without issues.  
+
+Also, all recordings below are **eyes closed** only!
+
+The frequency bands chosen follow that from Whitford's paper (2007), where they had:
+
+- Slow waves: 0.5 - 7.5 Hz
+- Alpha waves: 8 - 12 Hz
+- Beta waves: 12.5 - 34.5 Hz
+
+For topography, we used information from 23 channels to create 4 topographical regions. Again this was also inspired by Whitford's 2017 paper:
+
+- Frontal: c("Fp1", "Fp2", "F7", "F3", "Fz", "F4", "F8", "FC3", "FCz", "FC4") 
+- Temporal: c("T7", "TP7", "T8", "TP8") 
+- Parietal: c("CP3", "CPz", "CP4", "P3", "Pz", "P4")
+- Occipital: c("O1", "Oz", "O2")
+
+
+```{r Look at the power spectra of included recordings}
+# Good recording IDs + removing unwanted variables
+data3L <- data2L %>%
+  filter(ID %in% EEG_QC_rec3$ID) %>%
+  select(ID, Sex, Age, Group, theta_good, Condition, channel, frequency, power) %>%
+  arrange(ID, frequency)
+
+
+# Creating frequency bands variable
+data4L <- data3L %>%
+  unique() %>%
+  mutate(
+    FB = case_when(
+      frequency >= 0.5 & frequency <= 7.5 ~ "slow",
+      frequency >= 8 & frequency <= 12 ~ "alpha",
+      frequency >= 12.5 & frequency <= 34.5 ~ "beta",
+      TRUE ~ "ERROR"
+    ),
+    FB = factor(FB, levels = c("slow","alpha", "beta"))
+    )
+
+# Creating a topography variable (These are directly from Whitford's paper 2007)
+data4L <- data4L %>%
+  mutate(
+    topography = case_when(
+      channel %in% c("Fp1", "Fp2", "F7", "F3", "Fz", "F4", "F8", "FC3", "FCz", "FC4") ~ "frontal",
+      channel %in% c("T7", "TP7", "T8", "TP8") ~ "temporal",
+      channel %in% c("CP3", "CPz", "CP4", "P3", "Pz", "P4") ~ "parietal",
+      channel %in% c("O1", "Oz", "O2") ~ "occipital",
+      TRUE ~ NA_character_  # for any unmatched channels
+      ),
+    topography = factor(topography, levels = c("frontal", "temporal", "parietal", "occipital"))
+  )
+
+```
+
+# Plotting the Power Spectra Density (Averaging Across Channels)
+
+Below we are plotting the **power spectral density (PSD)** of our data. This basically means that we have power values (uV^2) for different frequencies (Hz), that's it, there is nothing more complicated that goes to this. For a source that corroborated this, please visit:
+
+https://liquidinstruments.com/blog/what-is-power-spectral-density-and-why-is-it-important/
+
+Anyway, the PSD is different from **absolute power**, where we take PSD and then sum them within frequency bands. Note that the correct way to calculate absolute power is by taking the sum and not the mean!
+
+If we wanted to calculate relative power, essentially, or the proportion of power explained by that frequency, then we can sum up the power values across the range of our frequencies (0.5 - 35 Hz by 0.25 Hz, which is 139 frequencies) and then just divide each PSD by that sum. The reason why we have power values corresponding to 0.25 Hz is because our EEG segments are 4 seconds long, thus the **frequency resolution**, calculated by 1/seconds = 1/4 seconds = 0.25. 
+
+Anyway, thinking about our full long dataset, we have power values that correspond to a range of frequencies (139). Every recording has this information for 62 channels (62 * 139 = 8,618). This is too much information to plot. So instead what we can do is start by averaging across channels within each person, so now every will have a PSD comprised of 139 values that represent the overall PSD. Anyway to accomplish this we can take our long dataset and group it by ID and frequency and obtain an average power across channels- this will be our starting point.
+
+Next, we will take this information and this time average across participants to get a PSD that represents that information for all subjects. This information will then be embedded ontop of the plots as a black line. Now while this is great to visualize, this information is misleading. This is because the aggregate we are plotting is derived from using all channel information in our data. However, as we specified in the previous section, we are only using information from 23 channels in the final analysis, specifically by aggregating across channels of interest within topographical regions of interest. Therefore, we did the same here by averaging across channels of interest within the 4 topographical regions we care for and the plotted that along with the PSD that was further averaged across subjects.
+
+
+```{r Plotting the power spectra across channels}
+# Part 1: Averaging across channels
+avg_acros_chans <- data4L %>%
+  group_by(ID, frequency) %>%
+  summarise(avg_chan_pow = mean(power),
+            .groups = "drop")
+
+# Part 2: Averaging across channels and subjects
+avg_acros_chans_sub <- avg_acros_chans %>%
+   group_by(frequency) %>%
+   summarise(avg_chan_sub_pow = mean(avg_chan_pow),
+            .groups = "drop")
+
+# Part 3: Averaging across channels within topography
+avg_acros_chans_by_top <- data4L %>%
+  group_by(ID, frequency, topography) %>%
+  summarise(avg_chan_pow = mean(power),
+            .groups = "drop") %>%
+  drop_na()
+
+# Part 4: Averaging across channels and subjects within topography
+avg_acros_chans_sub_by_top <- avg_acros_chans_by_top %>%
+   group_by(frequency, topography) %>%
+   summarise(avg_chan_sub_pow = mean(avg_chan_pow),
+            .groups = "drop")
+
+# Visualizing the power spectra (New) averaged across channels
+avg_acros_chans %>%
+  ggplot(aes(x = frequency, y = avg_chan_pow, group = ID)) +
+  geom_line(color = "darkgrey", alpha = 0.7, size = 0.5) +
+  labs(title = "Channel-averaged PSD per participant (grey) and\ngrand average across participants (black)",
+       x = "Frequency (Hz)", y = "Power (μV²)") +
+  geom_line(data = avg_acros_chans_sub, 
+            aes(x = frequency, y = avg_chan_sub_pow), 
+            color = "black", size = 1.2, inherit.aes = FALSE) +
+  theme_clean()
+
+# Visualizing the power spectra (New) averaged across channels within topography
+avg_acros_chans_by_top %>%
+  ggplot(aes(x = frequency, y = avg_chan_pow, group = ID)) +
+  geom_line(color = "darkgrey", alpha = 0.7, size = 0.5) +
+  facet_wrap(~topography, scales = "free") +
+  geom_line(data = avg_acros_chans_sub_by_top, 
+            aes(x = frequency, y = avg_chan_sub_pow), 
+            color = "black", size = 1.2, inherit.aes = FALSE) +
+   labs(title = "Channel-averaged PSD per participant (grey) and\ngrand average across participants (black) by topography",
+       x = "Frequency (Hz)", y = "Power (μV²)") +
+  theme_clean()
+
+
+
+```
+
+
+# Calculating Absolute Power (Data Reduction)
+
+We are starting back with our long dataset and this time we will be using it to calculate **absolute power**. We used Grok's help to basically accomplish this. Okay so we established that each subject has 8,618 observations (62 * 139 = 8,618). We do not care for information from 62 channels, we are only interested in information from 23 of them, so we will start by filtering out channels we do not care for. The easiest way to do this is just to drop observations where topography has NA's, because these are channels that were not labeled for any of the 4 topography groups. 
+
+What we have now per person is 3,197 observations (23 * 139 = 3,197). What we need to do now is simplify our data, or reduce the number of observations by averaging across channels within our frequency bands of interest. This will result in a PSD for 4 topographies for each person (4 * 139 = 556 observations).
+
+Absolute power is defined as the **sum of power values** within frequency bands. So the next step will be to sum power values within topographical regions. We have three frequency bands of interest (slow, alpha, beta), so the 556 observations will be isolated into 4 mutually exclusive groups (topography), from those groups which represent PSD, we will create sub groups of PSD within frequency bands (4 * 3 = 12 topography x frequency band groups), and from these groups we will take the chunked PSD values and sum them together for each person! Additionally, we will multiply this sum by the frequency resolution, which is 0.25. This apparently makes the values actual absolute power, but regardless when we analyze the data we will still get the same results had we not done this. 
+
+Therefore, each subject will now have 3 * 4 = 12 power values. With this information, we can also group by either frequency bands or frequency band * topography level combinations and calculate z-scores. In the plots below we can see the consequence of calculating z-scores failing to account for topography, the data becomes very skewed. However when including topography it looks a lot more reasonable, but still skewed. Since we are going to use models that require a normally distributed outcome, we must have to do some transformation to our data.
+
+So in plots below, we also take the log of the outcome and then conver these values into z-scores. From the plots we see that in the log scale values are no longer that extreme, aka not that far away from the mean, which means that our analysis will probably work on our outcome (absolute power) in this scale. 
+
+This also means that we do not need to remove subjects for having 'extreme' scores since the log scores all look reasonable. Therefore our next section can just be us reporting our final sample size now that the removing subjects phase is concluded. 
+
+```{r Calculating absolute power}
+# Filter out channels we do not care for
+chan_filt <- data4L %>%
+  drop_na(topography)
+
+# Average across channels within topography regions
+avg_across_chan_by_top <- chan_filt %>%
+  group_by(ID, frequency, topography, Sex, Age, theta_good) %>%
+  summarise(FB = FB[1],
+            mean_pow = mean(power),
+            .groups = "drop") %>%
+  drop_na(FB)
+
+# Calculating absolute power
+final_dat <- avg_across_chan_by_top %>%
+  group_by(ID, topography, FB, Sex, Age, theta_good) %>%
+  summarise(absolute_power = sum(mean_pow) * 0.25,
+            .groups = "drop")
+
+# Data points per person
+cat("\nData points per person, should sum to 12\n")
+xtabs(~topography + FB, filter(final_dat, ID == "10027"))
+
+
+# Plotting z-scores of Absolute Power within the Frequency Bands
+norm_plot1 <- final_dat %>%
+  group_by(FB) %>%
+  mutate(power_z = scale(absolute_power)) %>%
+  ggplot(aes(x = FB, y = power_z)) +
+  geom_boxplot() +
+  labs(title = "Absolute Power Z-Scores within Frequency\nBands Ignoring Topography",
+       x = "Frequency Bands", y = "Absolute Power (Z)") +
+  theme_clean()
+
+
+# Plotting z-scores of Absolute Power within the Frequency Bands by Topography
+norm_plot2 <- final_dat %>%
+  group_by(FB, topography) %>%
+  mutate(power_z = scale(absolute_power)) %>%
+  ggplot(aes(x = FB, y = power_z)) +
+  facet_wrap(~topography, scales = "free") +
+  geom_boxplot() +
+  labs(title = "Absolute Power Z-Scores within Frequency\nBands Accounting for Topography", 
+       x = "Frequency Bands", y = "Absolute Power (Z)") +
+  theme_clean()
+
+# Create a plot from both normalized plots
+norm_plot1 + norm_plot2
+
+
+# Plotting z-scores of Absolute Power within the Frequency Bands
+norm_plot1_log <- final_dat %>%
+  group_by(FB) %>%
+  mutate(power_z_log = scale(log(absolute_power))) %>%
+  ggplot(aes(x = FB, y = power_z_log)) +
+  geom_boxplot() +
+  labs(title = "Logged Absolute Power Z-Scores within\nFrequencyBands Ignoring Topography",
+       x = "Frequency Bands", y = "Logged Absolute Power (Z)") +
+  theme_clean()
+
+
+# Plotting z-scores of Absolute Power within the Frequency Bands by Topography
+norm_plot2_log <- final_dat %>%
+  group_by(FB, topography) %>%
+  mutate(power_z_log = scale(log(absolute_power))) %>%
+  ggplot(aes(x = FB, y = power_z_log)) +
+  facet_wrap(~topography, scales = "free") +
+  geom_boxplot() +
+  labs(title = "Logged Absolute Power Z-Scores within\nFrequency Bands Accounting for Topography", 
+       x = "Frequency Bands", y = "Logged Absolute Power (Z)") +
+  theme_clean()
+
+
+norm_plot1_log + norm_plot2_log
+
+```
+
+# Final Demographics
+
+From this point on, no observations will be removed from our data. Thus, here we will report our final sample size a long with descriptives of our data. Lastly, we will also show missing values for each variable. There should be no missing values in our predictors, covariates, and outcomes of interest. 
+
+```{r Generating the final descriptives information}
+# The number of unique IDs in our data
+final_ID_num <- length(unique(final_dat$ID))
+obs_num <- 12
+total_obs <- final_ID_num * obs_num
+cat("\nThere are",final_ID_num,"unique IDs in our sample and each one should have 12 observations, for a total of",total_obs,"observations\n")
+cat("\nCounting the number of rows in the data, there are",nrow(final_dat),"rows\n")
+
+# Higher level variables (person level) 
+final_dat_sliced <- final_dat %>%
+  group_by(ID) %>%
+  slice_head(n=1) %>%
+  ungroup()
+
+# Create a graph for the final demographics
+# Save the min and max age as objects
+mean_age <- round(mean(final_dat_sliced$Age),1)
+sd_age <- round(sd(final_dat_sliced$Age), 1)
+min_age <- min(final_dat_sliced$Age)
+max_age <- max(final_dat_sliced$Age)
+
+# Generate a histogram of our Age
+dem_plot1 <- final_dat_sliced %>%
+  ggplot(aes(x = Age)) +
+  geom_histogram(color = "black", fill = "white") +
+  labs(title = paste0("Sample age distribution\n(n=",final_ID_num,
+                      "; mean = ", mean_age, "; sd = ", sd_age,";\n",
+                      "min = ",min_age,"; max = ",max_age,")")) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.05))) +
+  theme_clean()
+
+# Create a histogram of sex?
+dem_plot2 <- final_dat_sliced %>%
+  group_by(Sex) %>%
+  summarise(count = length(Sex),
+            percent = length(Sex)/nrow(final_dat_sliced)*100) %>%
+  mutate(label = paste0(count, " (", round(percent,1),"%)")) %>%
+  ggplot(aes(x = Sex, y = count, fill = Sex)) +
+  geom_col(width = .5, color = "black") +
+  geom_text(aes(label = label), vjust = -.6, size = 4.2) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.25))) +
+  theme_clean() +
+  labs(title = "Number and percentage of\nparticipants by sex") +
+  theme(legend.position = "none")
+
+# Create one comprehensive descriptive plot
+dem_plot1 + dem_plot2
+
+# When checking for missing data, 
+cat("\nHere are values representing missing data for each variable in the final dataset\n")
+sapply(final_dat, function(x) sum(is.na(x)))
+```
+
+
+
+
+# Visualizing the Distribution of Absolute Power Within Topographies and in Relation to Age
+
+The histograms of absolute power grouped for each topography are showing that the data is pretty skewed to the right. This is problematic because in order for us analyze our data we need to see a normal distribution to produce stable and reliable standard errors. Now this is not always the case, what really matters is the distribution of your errors, however this is a good shortcut to predict whether our errors will look normal or not.
+
+In Whitford's paper, they also report that their distribution of absolute power for their sample was skewed also to the right. Since their analysis involved using regression, they needed their outcome distribution (absolute power) to look normal, thus they square root their data. 
+
+Below we are doing something similar, we are plotting the distribution of absolute power in its original scale, after the values were transformed with the square root and a transformation of values using logarithm. We see below that our data looks best (normally distributed) when we use the log transformations. 
+
+Additionally we are also showing the scatterplot between that transformation of the outcome (absolute power) and age. These descriptives give us a hint on whether or not we see that with age absolute power decreases, which theoretically is something we would expect.  
+
+We can kinda see this with the slow wave, where with age the absolute power of the slow wave (0.5 - 7.5 Hz) decreases, however for alpha and beta we do not see this relationship.
+
+```{r visualizing the relationship with age}
+# Create a custom function for scatterplots
+plot_scatr <- function(data, x, y) {
+ggplot(data,aes(x = {{x}}, y = {{y}})) +
+    geom_point(shape = 21,          # Creates circle with filling and border
+             fill = "darkgrey",   # Inner fill color
+             color = "black",     # Border color
+             size = 1,            # Point size (adjust for thicker border)
+             stroke = 1) +      # Border thickness (optional, default is 0.5)
+  theme_clean() 
+}
+
+# Create a function to plot a frequency band by topography
+plot_fb_top <- function(data, x, y, FB) {
+data_filt <- data %>%
+    filter(FB == !!FB) # To make it filter correctly
+
+plot1 <- data_filt %>%
+  plot_scatr({{x}}, {{y}}) +
+  facet_wrap(~topography, scales = "free") +
+  labs(title = paste("Frequency band:", FB))
+
+plot2 <- data_filt %>%
+  plot_hist({{y}}) +
+  facet_wrap(~topography) +
+  labs(title = paste("Distribution of:", FB))
+
+# Print out both plots
+plot1 + plot2
+}
+
+# Plot mean power regressed on age across topography for each FB
+plot_fb_top(final_dat, Age, absolute_power, "slow")
+plot_fb_top(final_dat, Age, absolute_power, "alpha")
+plot_fb_top(final_dat, Age, absolute_power, "beta")
+
+# Plot it but sqrt transformed
+plot_fb_top(final_dat, Age, sqrt(absolute_power), "slow")
+plot_fb_top(final_dat, Age, sqrt(absolute_power), "alpha")
+plot_fb_top(final_dat, Age, sqrt(absolute_power), "beta")
+
+# Plot it but log transformed
+plot_fb_top(final_dat, Age, log(absolute_power), "slow")
+plot_fb_top(final_dat, Age, log(absolute_power), "alpha")
+plot_fb_top(final_dat, Age, log(absolute_power), "beta")
+
+
+```
+
+
+# Create Spelling Performance Group Using Fitted Values from Quadratic to Plateau Model
+
+[We deleted the section before showing a scatterplot between Age and Spelling Ability because who cares, we show the same thing below but with more information]
+
+To address the concerns above, we can fit a quadratic to plateau model to model Spelling Ability as a function of Age. This will produce fitted values (aka the expected spelling score for each level of Age) that we can use to our advantage. We can take the difference of the observed value from the fitted value and then quantify this difference into quantiles. Those in the bottom 20% percentile will become the poor performance spellers while the rest will be the good performance spellers.
+
+The advantage of this approach is that it basically categorizes poor spellers as individuals who performed poorly in comparison to individuals of a similar age. Also, the spelling ability scores were derived from a much larger sample, actually from the sample of all IDs that had spelling data. This is good because that sample was 661 subjects. Now while I am no IRT expert, I think this large of a sample size plus the fact that there were poor performers in the spelling task based on raw scores, justifies that standardized values, which represent distance from the mean performers, is still capturing true poor spellers. 
+
+
+```{r Creating a spelling group using quadratic to plateau models}
+# Load in the package
+library(nlraa)
+library(msm)
+
+# run a quadratic to plateau regression
+spell.nls <- nls(theta_good ~ SSquadp3xs(Age, a, b, jp), 
+                 data = final_dat_sliced)
+
+# Using predict2_nls() function to get SE for fitted values across level of Age
+spell.nls.pred <- predict2_nls(spell.nls, newdata = NULL, interval = "confidence", level = 0.95)
+final_dat_sliced$theta_good.fitted <- spell.nls.pred$Estimate
+
+# Create the grouping variable based on subjects with less than - 1.5 SE from the model
+final_dat_sliced <- final_dat_sliced %>%
+  mutate(SpellDiscrepency = theta_good - theta_good.fitted,
+         SpellThresh = quantile(SpellDiscrepency, 0.20), # 1-20% Percentile vs 20-100% percentile
+         SpellGroup = ifelse(SpellDiscrepency <= SpellThresh, "Poor", "Good"),
+         SpellGroup = factor(SpellGroup, levels = c("Poor", "Good")))
+
+# Add this information into the long final dataset
+final_dat <- final_dat %>%
+  left_join(select(final_dat_sliced, ID, SpellGroup),
+            by = "ID") %>%
+  data.frame()
+
+# View the number of participants in each group
+group.num <- xtabs(~SpellGroup, final_dat_sliced)
+group.prop <- sapply(round(prop.table(xtabs(~SpellGroup, final_dat_sliced)) * 100,1), function(x) paste0(x,"%"))
+
+# Create a caption for the model
+spl.coefs <- round(coef(spell.nls),2)
+spll.caption <- paste0("Intercept = ", spl.coefs[1], "; slope = ", spl.coefs[2], "; join point = ", spl.coefs[3],
+                       "; Good Spellers = ", group.num["Good"]," (",group.prop["Good"], ")",
+                       "; Poor Spellers = ", group.num["Poor"]," (",group.prop["Poor"],")")
+
+# Add the fitted values
+final_dat_sliced %>%  
+  ggplot(aes(x = Age, y = theta_good, color = SpellGroup)) +
+  geom_jitter(width = .5, alpha = 0.6) +  # Added alpha for better visibility if overlapping
+  geom_line(aes(y = theta_good.fitted), linewidth = 1.5, linetype = "dashed", color = "black") +
+  labs(
+    title = "Relationship between Spelling Ability and Age (By Spelling Group)",
+    y = "Spelling Ability (Standardized)",
+    caption = spll.caption) +
+  theme_clean() 
+
+```
+
+
+# Age and Spelling Group Tabulation Table (Contingency Table)
+
+Now that we have created a spelling group factor, let's see what the cell sample sizes are. We will bin people into age groups and then show within those bins, how many good and poor spellers there are. 
+
+
+
+```{r spelling group by age contingency table}
+# Create an Age group variable to see our sample size across age when turned into a factor
+final_dat_sliced <- final_dat_sliced %>%
+  mutate(Age_group = case_when(
+    Age >= 15 & Age < 18 ~ "15-17",
+    Age >= 18 & Age < 21 ~ "18-21",
+    Age >= 21 & Age < 27 ~ "21-26",
+    Age >= 27 & Age <= 33 ~ "27-33",
+    TRUE ~ "ERROR"
+  ))
+
+
+# Use xtabs() to get a frequency table
+xtabs_tb <- addmargins(xtabs(~Age_group + SpellGroup, final_dat_sliced))
+
+# Convert the frequency table into a data frame
+xtabs_df <- xtabs_tb %>%
+  as.data.frame() %>%
+  tidyr::pivot_wider(
+    names_from = SpellGroup,
+    values_from = Freq,
+    values_fill = 0
+  )
+
+# Print out a nice table
+xtabs_df %>%
+  gt() %>%
+  tab_header(
+    title = "Number of Good and Poor Spellers by Age Group"
+  ) %>%
+  tab_options(
+    table.font.size = 13,
+    heading.title.font.size = 18
+  )
+
+
+```
+
+
+### Visualize the Relationship Between Spelling and EEG power
+
+Visually it looks like spelling ability does not seem to be predictive at all of rsEEG absolute power. This is preparing us for the fact that we are very likely not going to see any differences between good and poor spellers- their EEG activity looks the same.
+
+```{r visualize the relationship between spelling ability and EEG power}
+# Create a custom function that plots absolute_power regressed onto Age by spelling group
+plot_age_pwr_grp <- function(data, x, y, FB) {
+  data_filt <- filter(data, FB == !!FB)
+  data_filt %>%
+    ggplot(aes(x = {{x}}, y = {{y}}, color = SpellGroup)) +
+    geom_jitter(alpha = .5, size = .7) +
+    facet_wrap(~topography, scales = "free") +
+    labs(title = paste0("Frequency Band: ", FB)) +
+    theme_clean()
+}
+
+# Creating a custom function that turns Age into a factor with 5 levels
+# This is a really bad function but w/e
+plot_age_Q_pwr_grp <- function(data, x, y, FB) {
+  data %>%
+    mutate(Age_Q = cut({{ x }}, 
+                       breaks = quantile({{ x }}, probs = seq(0, 1, by = 0.2), na.rm = TRUE),
+                       include.lowest = TRUE,
+                       labels = c("Q1", "Q2", "Q3", "Q4", "Q5"))) %>%
+    filter(FB == !!FB) %>%
+    ggplot(aes(x = Age_Q, y = {{ y }}, fill = SpellGroup)) +
+    facet_wrap(~topography, scales= "free") +
+    geom_boxplot() +
+    labs(title = paste0("Frequency Band: ", FB),
+         x = "Age Quantiles") +
+    theme_clean()
+}
+
+# Plot EEG power regressed by Age and Spelling Group for each FB
+plot_age_pwr_grp(final_dat, Age, log(absolute_power), "slow") + geom_smooth(method = "lm", se = FALSE)
+plot_age_pwr_grp(final_dat, Age, log(absolute_power), "alpha") + geom_smooth(method = "lm", se = FALSE)
+plot_age_pwr_grp(final_dat, Age, log(absolute_power), "beta") + geom_smooth(method = "lm", se = FALSE)
+
+# Show the differences in EEG power by group
+plot_age_Q_pwr_grp(final_dat, Age, log(absolute_power), "slow")
+plot_age_Q_pwr_grp(final_dat, Age, log(absolute_power), "alpha")
+plot_age_Q_pwr_grp(final_dat, Age, log(absolute_power), "beta")
+```
+
+
+### Replicating Findings from Whitford (2007)
+
+The goal here is to run the exact same statistics that was reported in Whitford et al. (2007) paper. They ran regular multiple regressions using data from 138 healthy participants. Specifically, they sqrt() transformed the power values and they log transformed the Age variable. They did this (specifically the transforming of the outcome) to have normal looking data so a regression would be appropriate (rather than a glm).
+
+Their multiple regression had the factors log(Age) and sex. They ran a single multiple regression for each EEG region (frontal, temporal, parietal, occipital) and frequency band (slow, alpha, beta) combination- no mixed models were used. Since this approach produces 12 p-values (if only interested in log(Age)), they used **alpha criterion level of 0.01**. 
+
+Thus, we will be fitting the following model 12 times and showcasing how well the model fit our data. We will be using the natural log instead because it does not make sense to interpret a sqrt() outcome of the residual assumptions are violated in the process. We will also take the natural log of age to be consistent.
+
+log(absolute_power) ~ b0 + b1_sex + b2_log(age)
+
+Our results show something interesting. For starters, only the slow frequency band was predicted by log(Age), the other frequencies were not. This is very different from Whitford where basically every regression produced a significant log(age) at the 0.01 alpha criterion except for the Alpha/Frontal Lobe combination. Next, the produced QQ plots do not look so good- there are several cases where the relationship between the residual values and theoretical quantiles do not look linear. However, if we change our outcome from sqrt(absolute_power) to log(absolute_power), the Q-Q plots produced look much better. We might have to do this just because our data might be more skewed that the data used by Whitford.
+
+Just to check, we did log(absolute_power) and ran the code below, the results are essentially the same except that alpha x parietal becomes significant. 
+
+```{r Running our quadratic to plateau model}
+# Load the gt package
+library(gt)
+
+# Create a function to generate a multiple logistic regression as in Whitford
+whit_lm <- function(data) {
+  mod <- lm(log(absolute_power) ~ Sex + log(Age), data)
+  return(mod)
+}
+
+# Create a function to extract model information
+extract_lm <- function(lm){
+  lm_tidy <- broom::tidy(lm)
+  lm_age <- filter(lm_tidy, term == "log(Age)")
+  lm_age <- mutate(lm_age, significant = ifelse(p.value < .01, "Y", "N"))
+  lm_age_p <- mutate(lm_age, p.value = ifelse(p.value < .001, 
+                                              "< 0.001", 
+                                              as.character(round(p.value, 3))))
+  lm_age_final <- mutate_if(lm_age_p, is.numeric, ~round(., 3))
+
+}
+
+# Create a function to obtain QQ plots of each multiple regression
+plot_qq <- function(data, lm, topography) {
+  # Calculate the standardized residuals
+  data$rstandard <- rstandard(lm)
+  
+  # Plot the residuals against theoretical quantiles
+  data %>%
+    ggplot(aes(sample= rstandard)) +
+    geom_qq() +
+    stat_qq_line() +
+    geom_hline(yintercept = 3, color = "red") +
+    theme_classic() +
+    labs(x = "Theoretical Quantiles",
+         y = "Standardized\nResiduals",
+         title = paste0(topography)) +
+    theme_clean()
+}
+
+# Create a function to plot the QQ plots for a specified frequency band
+plot_fb_qq <- function(data, FB) {
+  data %>%
+  filter(FB == !!FB) %>%
+  pull(qq_plot) %>%
+  unlist(recursive = FALSE) %>%  # flattens the list of lists
+  wrap_plots(ncol = 2) +
+  plot_annotation(title = paste("Q-Q plot of standardized residuals with\nsuperimposed straight line:", FB))
+}
+
+# Create lm models for each of FB x topography combinations 
+lm_mod_fits <- final_dat %>%
+  mutate(FB = fct_relevel(FB, "slow", "alpha", "beta"),
+         topography = fct_relevel(topography, "slow", "parietal", "occipital")) %>%
+  arrange(FB, topography) %>%                 # Arranges row in the way we want 
+  nest(data = -c(FB, topography)) %>%        
+  mutate(lm = map(data, possibly(whit_lm, NA)),
+         qq_plot = pmap(list(data, lm, topography), plot_qq)) # pmap() handles more than 3 arguments
+
+
+# Extract the estimates from the multiple regression
+lm_estimates <- lm_mod_fits %>%
+  mutate(estimates = map(lm, possibly(extract_lm, NA))) %>%
+  unnest(estimates)
+  
+# Show the results 
+lm_estimates %>%
+  select(where(~ !is.list(.))) %>% # Remove all list columns
+  gt() %>%
+  tab_style(
+      style = cell_text(align = "center"),
+      locations = cells_body(columns = everything())
+    )
+
+
+# Show the Q-Q plots for each frequency band
+plot_fb_qq(lm_mod_fits, "slow")
+plot_fb_qq(lm_mod_fits, "alpha")
+plot_fb_qq(lm_mod_fits, "beta")
+```
+
+
+### Fitting a Quadratic Plateau Mixed-Effect Models (EEG ~ Age + (1|ID))
+
+From our results above running regression models, we see that only for 'slow' waves was there a significant relationship between age and absolute power. This effect was robust and present across the different topographies (frontal, temporal, parietal, occipital). By looking at the beta coefficients, we see that they are all **negative**, which means that with age absolute power across all topographical regions is decreasing for slower frequencies.
+
+However, the higher frequencies such as 'alpha' and 'beta' produced non significant beta estimates, meaning that with age the absolute power in these frequencies is constant. 
+
+Since there is no change in power for 'alpha' and 'beta' with age, then it does not make sense to use a Quadratic to Plateau model on that data. However, it does make sense to run this model for the 'slow' frequency absolute power data.
+
+Thus, this section will be running a Quadratic to Plateau model where log(absolute power) for 'slow' frequency will be modeled as a function of age (centered at min age). We will need to **subset** the data to only have 'slow' absolute power values. Thus, our original dataset of 352 (IDs) * 12 = 4,224 observations will be reduced to 352 * 4 = 1,408 observations.
+
+First,we will just see how absolute power is explained from age alone. This will be our 'mod0'. The estimates produced will be the:
+
+- The intercept (log absolute power when age = min sample age)
+- The slope (linear slope representing age and absolute power relationship at the min sample age)
+- Join point (the age value when the plateau occurs)
+
+
+```{r Fitting an age only  Quadratic to Plateau mixed effects model}
+# Center age and relevel the topography factor (make parietal last)
+final_dat <- final_dat %>%
+  mutate(Age_min_c = Age - min(Age),
+         topography_ec = factor(topography,
+                             levels = c("frontal", 
+                                        "temporal", 
+                                        "occipital", 
+                                        "parietal")))
+
+# Filter the data to only include slow frequency
+slow_dat <- final_dat %>%
+  filter(FB == "slow") %>%
+  mutate(log_absolute_slow_power = log(absolute_power))
+
+# Run a Quadratic to Plateau Model Looking at log(absolute power) as a function of age
+mod0 <- nlme(log_absolute_slow_power ~ SSquadp3xs(Age_min_c, a, b, xs),
+             data = slow_dat,                               # use the passed tibble
+             fixed = list(a ~ 1, b ~ 1, xs ~ 1),
+             random = a ~ 1 | ID,
+             start = c(a = 3,
+                       b = -1,
+                       xs = 28),
+             control = nlmeControl(msMaxIter = 2000))
+
+```
+
+
+### Results of 'Slow' absolute power as a function of age (Quadratic to Plateau Model)
+
+Below we will be showing the summary of the Quadratic to Plateau Model showcasing 'slow' log(absolute power) as a function of age. Notice that every parameter is significant. Let's cover each one.
+
+- **Intercept**: The intercept is 2.10, which represents the log of absolute power at min age of the sample (15 years). The mean of log absolute power is 1.7892, thus the intercept is showing higher log absolute power at the age of 15 compared the average in the sample.
+- **Slope**: The slope is -0.0824, which is the linear relationship between age and log absolute power at the age of 15. This means that at a different age, this slope value will be different and it will be closer to 0 in comparison. Overall the takeaway is that this shows absolute power is decreasing with age, as we would have expected.
+- **Join point**: The join point is 16.44. This is the value of x where the quadratic to plateau model turns into a plateau. In other words, the age when log absolute power levels out and stops decreasing. Since our age variable was centered to age 15, then this means the join point is 15 + 16.44 = 31.44 years. However, the standard errors are quite large (4.56). Therefore, we can be 95% confident that the true age of when absolute power decreases is between 22.5 to 40.4. 
+
+**Limitations**: The obvious problem in the model is how large the standard errors are for the join point. This can tell us that we do not have enough data points for the later values of x (older participants), which makes estimating a precise join point difficult. Another thing to notice is that this will only get worse as we subset our data further, like we plan to do when introducing 'Spell Group' as a factor, which is a between group factor. I think (Leo) that introducing between group factors, unlike within group, will require a larger sample size because estimates are now being derived by only using that subset of data, rather than the whole like we are doing now. 
+
+To further increase our confidence that our interpretation of these estimates are correct, specifically the interpretation of the slope (we are working with a nonlinear model), we can use the `slope()` function from the marginaleffects package to derive the slope representing the linear relationship between x (age) and y (log absolute power) at any value of x. We see that when we do this for 0 (age 15) that it produces the same slope as the one from the model summary.
+
+```{r View the results of the age only quadratic to plateau model}
+# Print out the model with just age
+summary(mod0)
+
+# Confirm the interpretation of the slope
+library(marginaleffects)
+slopes(mod0, variables = "Age_min_c", newdata = datagrid(Age_min_c = 0, model = mod0))
+
+```
+
+
+While on the same topic, we can also generate a plot of our data as a scatterplot with the fitted values embedded on top.
+
+```{r Show the scatter plot of age only quadratic to plateau model}
+# Create a grid for values that we want to predict, aka come up with fitted values for
+newdat_age <- expand.grid(
+  Age_min_c = seq(min(slow_dat$Age_min_c), max(slow_dat$Age_min_c), length.out = 100))
+
+# Add the predicted values back into the grid + adjust the age and relevel topography
+newdat_age <- newdat_age %>%
+  mutate(log_absolute_power = predict(mod0, newdata = newdat_age, level = 0),
+         Age = Age_min_c + 15)
+
+
+# Create a scatterplot with the fitted value within it
+slow_dat %>%
+  ggplot(aes(x = Age, y = log_absolute_slow_power)) +
+  geom_point() +
+  geom_line(data = newdat_age, aes(x = Age, y = log_absolute_power), size = 1, color = "darkblue") +
+  labs(title = "Fitted Values of Quadratic to Plateau Model Showcasing\n'Slow' Absolute Power Regressed onto Age",
+       y = "log of absolute power\n(slow frequencies)") +
+  theme_clean()
+
+```
+
+
+### Adding Topography to the Quadratic to Plateau Model
+
+Now, we will increase the complexity of the model by introducing the factor **topography**. In typical regression, a factor will produce estimates that corresponds directly to the intercept. However, in quadratic to plateau models (and nonlinear models in general), we have the option to also generate estimates for the slope for k-1 levels of topography, the join point, or any combination of them (plus the intercept). Thus, we will create three models that include topography, starting with a model that estimates more intercepts (mod1), then adds slopes (mod2), and lastly adds join points (mod3). Afterwards, we will use the anova() function to compare the models and show us which of the three best explains our data. However, we have reason to suspect that 'mod3' will probably not be the best, mainly because there are not many participants at the later levels of age, making the generated estimate (join point) have higher standard errors.
+
+Additionally, the topography factor will be **effect coded**, meaning that the resulting parameters for the levels of the factors (those that get estimated) will show mean differences compared to a grand average from the levels of topography, not from one reference level.
+
+
+```{r Introducing Topography to the Quadratic to Plateau Model}
+# Create an effect coding matrix (contrast), label it, then add this to our data
+cmat <- contr.sum(4)
+dimnames(cmat) <- list(
+  rows = c("frontal", "temporal", "occipital", "parietal"),   
+  columns = c("frontal", "temporal", "occipital") 
+)
+contrasts(final_dat$topography_ec) <- cmat
+
+# Generate models that have topography as a factor
+mod1 <- nlme(log_absolute_slow_power ~ SSquadp3xs(Age_min_c, a, b, xs),
+             data = slow_dat,                               # use the passed tibble
+             fixed = list(a ~ topography_ec, b ~ 1, xs ~ 1),
+             random = a ~ 1 | ID,
+             start = c(a = 3, 0, 0, 0,
+                       b = -1,
+                       xs = 28),
+             control = nlmeControl(msMaxIter = 2000))
+
+mod2 <- nlme(log_absolute_slow_power ~ SSquadp3xs(Age_min_c, a, b, xs),
+             data = slow_dat,                               # use the passed tibble
+             fixed = list(a ~ topography_ec, b ~ topography_ec, xs ~ 1),
+             random = a ~ 1 | ID,
+             start = c(a = 3, 0, 0, 0,
+                       b = -4, 0, 0, 0,
+                       xs = 28),
+             control = nlmeControl(msMaxIter = 2000))
+
+mod3 <- nlme(log_absolute_slow_power ~ SSquadp3xs(Age_min_c, a, b, xs),
+             data = slow_dat,                               # use the passed tibble
+             fixed = list(a ~ topography_ec, b ~ topography_ec, xs ~ topography_ec),
+             random = a ~ 1 | ID,
+             start = c(a = 3, 0, 0, 0,
+                       b = -4, 0, 0, 0,
+                       xs = 28, 0, 0, 0),
+             control = nlmeControl(msMaxIter = 2000))
+
+
+# Model comparison
+anova(mod1, mod2, mod3) # Mod2 is the clear winner
+```
+
+
+### Results of 'Slow' absolute power as a function of age with Topography (Quadratic to Plateau Model)
+
+From the models specified above, the best fitting model was 'mod2' which include estimates for the intercepts and for the slopes. What this means is that we should expect some intercepts, or log absolute power values for 'slow' frequencies to be different at the age of 15 depending on the topography (the aggregate absolute values from channels in one of four locations). Following that same logic, this also means the slopes, or the rate of change between log absolute power and age will vary depending on topography. However, since 'mod3' did not significantly explain the data better than 'mod2' after accounting for the included complexity from estimating 3 join points, this model will derive one common join point. So log absolute power is expected to taper off around the same time for all topography regions. Now technically this does not make sense (at least I don't think so), but it's a limitation of our data rather than our analysis. Also, as mentioned that we used **effect coding** when introducing topography into the model, thus estimates will represent significant difference from the grand average estimate rather than a reference level. The level **parietal** was the level chosen to not get an estimate.
+
+- **Intercept**: We see that the overall grand mean intercept is 2.09, which is the average log absolute power of 15 year-olds. This value is almost identical to the 2.103 value estimated from the age only model. Looking at the estimates of frontal, temporal, and occipital levels, we see that **frontal** and **occipital** have significantly more log absolute power than the overall grand mean average. 
+- **Slope**: We see that the overall slope is significant, with a value of -0.078. This shows that at the age of 15, there is a significant negative relationship between age and log absolute power. This value is also very similar to the -0.082 estimate that was present in the age only model. When looking at the estimates from the other levels of topography, none of them are significantly different from the overall grand slope. This shows that while this model did fit better than one without estimating slopes for k-1 levels of topography, the uncorrected for multiple comparison p-values of topography slopes are essentially all the same, or we do not have sufficient evidence to believe that they are different.
+- **Join Point**: The join point is 18.19, which is 33.19 in terms of age, again the standard error is pretty wide (5.44), even more wide than the previous model, showing how adding more estimates for the model in this case makes us less certain on what our join point estimate is. This is not good! Especially since the largest age in our sample is 33, so the join point estimate is outside what are data shows.
+
+Like before, to justify that our understanding of the slope estimate is correct, we used the `slope()` function to derive the slope when the centered age variable is at 0 (Age = 15 years). We did this by telling the model to get us this slope using the 'temporal' electrode information. This is because the temporal level was not significant for both the intercept and slope difference against the overall grand average, thus I think will produce values very close to the grand average center. Anyway we see that it produced the value -0.0763, which is very similar to the -0.078 slope we got from our model.
+
+
+```{r View the results of the age with topography quadratic to plateau model}
+# Print out the model with just age
+summary(mod2)
+
+# Confirm the interpretation of the slope
+slopes(mod2, variables = "Age_min_c", newdata = datagrid(Age_min_c = 0, 
+                                                         topography_ec = "temporal",
+                                                         model = mod2))
+```
+
+To visualize the fitted values on our sample data, we need to use the `expand.grid()` function. We did this for the age only model, but since it was straightforward then there was no need to create a justification of how we managed to do that. For this model though, what we are essentially doing is creating a data frame of level combination of predictors that will then function as inputs to our model to generate fitted values. So to do this, we will create a vector for centered age that ranges from the min to the max values of that variable (centered age) for each level of topography (100 values of centered age). Below we can use the `xtabs()` function to confirm the data frame of predictor level combinations was created correctly, which is was since we see 100 values for each topography level.
+
+We then generated a scatterplot that shows the relationship between absolute power and age (fitted values) for each topographical region using the `facet_wrap()` function. While not present below, the model was re-specified with topography as **dummy coded**, and it showed a plot identical to what we see here with the **effect coded** plot. This means that the `predict()` function was able to provide the correct fitted values for the parietal level rather than the fitted values for the overall grand mean. Next, another plot was created to test whether the fitted values actually differed between topographies since it is hard to tell by looking at the plot below. That plot (also not shown) showed that the fitted values were in fact different for each topography region, thus building more confidence that this information was plotted correctly. 
+
+```{r visualizing absolute power as a funciton of age by topography}
+# Create a grid that has the predictor values we want for corresponding fitted values
+newdat_age_top <- expand.grid(
+  Age_min_c = seq(min(slow_dat$Age_min_c), max(slow_dat$Age_min_c), length.out = 100),
+  topography_ec = levels(slow_dat$topography_ec)
+)
+
+# Inspect the reference grid created
+xtabs(~topography_ec, newdat_age_top)
+
+# Add the predicted values back into the grid + adjust the age and relevel topography
+newdat_age_top <- newdat_age_top %>%
+  mutate(log_absolute_power = predict(mod2, newdata = newdat_age_top, level = 0),
+         Age = Age_min_c + 15,
+         topography = factor(topography_ec,
+                             levels = c("frontal", "temporal", "parietal", "occipital")))
+
+# Creating a pretty scatter plot
+slow_dat %>%
+  ggplot(aes(x = Age, y = log_absolute_slow_power)) +
+  geom_point() +
+  geom_line(data = newdat_age_top, aes(x = Age, y = log_absolute_power), size = 1, color = "darkblue") + 
+  facet_wrap(~topography) +
+  labs(title = "Fitted Values of Quadratic to Plateau Model Showcasing\n'Slow' Absolute Power Regressed onto Age by Topography",
+       y = "log of absolute power\n(slow frequencies)") +
+  theme_clean()
+
+```
+
+### Adding Spelling Group to the Quadratic to Plateau Model 
+
+The main focus for our analysis to investigate whether there are group differences in absolute power between good and poor spellers. We are hypothesizing that poor spellers will have higher absolute power for lower frequencies than good spellers, which will resemble findings reported in the literature for children between 7-14 years of age. Thus, we will estimate an intercept for spell group, which will represent the difference in absolute power between groups at the age 15.
+
+The next thing will be to address the slopes. Assuming that there will be differences between the intercepts between good and poor spellers, we will then need to test if the rate of change is different between the two groups. This is because if the slopes are the same, then essentially that indicates that absolute power between the two will continue to be different with age. However, if the slopes do differ, especially with the slope of the poor spellers being larger than the good spellers, then that would indicate that absolute power will become similar between the two groups at the end of development. In other words, that would show evidence for a 'catching' up in physiological maturation.
+
+Additionally, we should also check for differences in join points between groups, or at what age does absolute power plateau for both groups. While this will be difficult to estimate due to our sample, we still need to incorporate it to check whether or not there are differences in when maturation occurs between groups.
+
+We also thought that maybe for this model, since we are increasing its complexity by adding more estimates to the intercept, slope and join point, that maybe we could reduce model complexity by not estimating the k-1 slopes for topography. Thus, below we will be comparing both models against each other. 
+
+Also note that we also specified models with topography and spell group interactions and they did not significantly explain more variance than the simple models. These models are not shown here since they took up space and it was also a bit of p-hacking if we think about it.
+
+```{r Specifying spell group as a predictor}
+# Now use the information from above to fit a model with group
+mod_groupv1 <- nlme(log_absolute_slow_power ~ SSquadp3xs(Age_min_c, a, b, xs),
+                  data = slow_dat,                               # use the passed tibble
+                  fixed = list(a ~ topography_ec + SpellGroup, b ~ SpellGroup, xs ~ SpellGroup),
+                  random = a ~ 1 | ID,
+                  start = c(a = 3, 0, 0, 0, 0, 
+                             b = -4, 0,
+                             xs = 28, 0),
+                   control = nlmeControl(msMaxIter = 2000))
+
+mod_groupv2 <- nlme(log_absolute_slow_power ~ SSquadp3xs(Age_min_c, a, b, xs),
+                  data = slow_dat,                               # use the passed tibble
+                  fixed = list(a ~ topography_ec + SpellGroup, b ~ topography_ec + SpellGroup, xs ~ SpellGroup),
+                  random = a ~ 1 | ID,
+                  start = c(a = 3, 0, 0, 0, 0, 
+                             b = -4, 0, 0, 0, 0, 
+                             xs = 28, 0),
+                   control = nlmeControl(msMaxIter = 2000))
+
+# Test which is the better model
+anova(mod_groupv1, mod_groupv2)
+```
+
+```{r testing model residuals}
+# Update the model but this time specify the residuals (Default Compound Symmetric)
+mod_groupv2_cs <- update(mod_groupv2,
+                         correlation = corCompSymm(value = 0, form = ~1 | ID, fixed = FALSE))
+
+# Update to Unstructured Errors
+mod_groupv2_un <- update(mod_groupv2,
+                         correlation = corSymm(form = ~ as.numeric(topography_ec) | ID),
+                         weights = varIdent(form = ~ 1 | topography_ec))
+
+
+getVarCov(mod_groupv2_cs, "marginal")
+# Model Comparison
+anova(mod_groupv2_cs, mod_groupv2_un)
+
+# Create a new data frame
+slow_dat2 <- slow_dat
+
+# Add fitted values
+slow_dat2$residuals <- residuals(mod_groupv2_cs, type = "normalized")
+
+# Transform the data to have 4 variables of residuals by topography
+slowdat2_subset <- select(slow_dat2, ID, topography, residuals)
+Residuals_df <- slowdat2_subset %>%
+  pivot_wider(names_from =  topography, values_from = residuals)
+
+# Calculate a correlation matrix
+round(cor(select(Residuals_df, - ID)),2)
+
+# Create a new data frame
+slow_dat3 <- slow_dat
+
+# Add fitted values
+slow_dat3$residuals <- residuals(mod_groupv2_un , type = "normalized")
+
+# Transform the data to have 4 variables of residuals by topography
+slowdat3_subset <- select(slow_dat3, ID, topography, residuals)
+Residuals2_df <- slowdat3_subset %>%
+  pivot_wider(names_from =  topography, values_from = residuals)
+
+# Calculate a correlation matrix
+round(cor(select(Residuals2_df, - ID)),2)
+
+```
+
+
+
+
+### Results of 'Slow' absolute power as a function of age with Topography Between Spelling Group (Quadratic to Plateau Model)
+
+The best fitting model was the one that still had slopes estimated for k-1 topography levels, so that is the one that we will be interpreting below. However, since this is our final model for the analysis, we will be interpreting the model not using the p-values directly from the output table, but the ones that we obtain using follow-up tests. This is so we can add adjustments to correct for multiple comparison. Additionally this will allow us to generate estimates for all levels of topography rather than just k-1 levels. Honestly, using **marginal effects** below, all previous models can essentially be ignored. Their reasoning for specification was to compare the results from these model back to them, to see if there are any weird discrepancies (ex: having a positive slope rather than negative or something crazy like that). 
+
+Unfortunately, the omnibus test that we would typically use, aka the one from the Anova() function does not work here, so we will be ignoring that.
+
+Okay so there is a lot of information down below, we will just make sense of the follow-up tests rather than the original model summary output. However, what is good about the model output is that it shows 1408 observations and 352 groups, which aligns with our dataset.
+
+**Parameter a: The Intercept**
+
+- Starting with **topography**, the estimated marginal means are showing the mean log absolute power for each level of topography when centered age is equal to 0 (age is 15 years). We see that all of them except for parietal are 2 log absolute power or larger. We can then do pairwise comparisons to test whether log absolute power differences between levels of topography. Looking at the p-values, we see that there are significant differences between frontal and parietal, temporal and occipital, temporal and parietal, and occipital and parietal. Essentially, from this we can see that in the parietal region, log absolute power tends to be lower overall compared to the other regions after adjusting for multiple comparisons (tukey)
+- Next with **spelling group**, we can see the estimates between poor (2.03) and good (2.10) spellers. Instantly we can see that the values are very close to each other, not only that but **unexpectedly**, there is more log absolute power for good spellers than poor spellers. Next we investigate whether these means when centered age is 0 (age is 15 years) are significantly different from each other, and unsurprisingly they are not (p = 0.5844).
+
+**Parameter b: The Slope**
+
+- **Note**: The following slope estimates where all calculated from age centered being equal to 0 (age is 15 years). To do this, we created a reference grid that specified age centered being equal to 0, and then using that grid to obtain estimated slopes. This is important because failing to do this step would have produced either a) derivatives (slopes) averaged across all data points which include all age data points or b) an estimated slope at the sample mean of age centered. Those would have been **main effects**, but we don't really care for that since what we really want is the slope that corresponds with age centered being at 0.
+
+- Starting with **topography**, we get the **simple slopes** of all levels of topography, where they are all negative and are all significant, indicating that with age log absolute power is decreasing, as we would expect. Next we use pairwise comparisons to see if the rate of change differs by topographical region. After controlling for multiple comparison using the Benjamini-Hochberg (BH) procedure, we found no differences in slope comparisons.
+- Next with **spelling group**, we see that the simple slopes for poor spellers is -0.0691 and good spellers is -0.0766, which look similar, with the slope being slightly stronger for good spellers than poor spellers. Not surprisingly, the slope differences between the two were not significant.
+
+
+**Parameter xs: The Join Point**
+
+- We only modeled the join point using the **spell group** factor. We can see that the age for log absolute power plateau in poor spellers is 21.8 + 15 = 36.8 and in good spellers is 17.9 + 15 = 32.9. Again these numbers do not really make sense and the standard errors are large, especially for the poor spelling group with was 17.10 unlike the good spellers which was 5.52. How large these standard errors are really undermine the model entirely I would say. Regardles there was no significant difference in the join point between the two groups. 
+
+
+```{r Results of the age with topography between spelling groups quadratic to plateau model}
+# Print out the summary of the best fitting model
+summary(mod_groupv2)
+
+# Follow up tests on the intercepts (estimated marginal means)
+(emm_top_a <- emmeans(mod_groupv2, pairwise ~ topography_ec, param = "a", infer = TRUE, adjust = "tukey"))
+(emm_grp_a <- emmeans(mod_groupv2, pairwise ~ SpellGroup, param = "a", infer = TRUE, adjust = "tukey"))
+
+# Create a dataset to get the slopes when Age is equal to 0
+age_0_dat <- datagrid(Age_min_c = 0,
+                      topography_ec = levels(slow_dat$topography_ec),
+                      SpellGroup = levels(slow_dat$SpellGroup),
+                      model = mod_groupv2)
+
+# Follow up tests on the slopes
+avg_slopes(mod_groupv2, variables = "Age_min_c", by = "topography_ec", newdata = age_0_dat)
+avg_slopes(mod_groupv2, variables = "Age_min_c", by = "topography_ec", newdata = age_0_dat,  hypothesis = ~ pairwise) %>%
+  hypotheses(multcomp = "holm")
+avg_slopes(mod_groupv2, variables = "Age_min_c", by = "SpellGroup", newdata = age_0_dat)
+avg_slopes(mod_groupv2, variables = "Age_min_c", by = "SpellGroup", newdata = age_0_dat,  hypothesis = ~ pairwise)
+
+# Follow up tests on the 
+(emm_grp_xs <- emmeans(mod_groupv2, pairwise ~ SpellGroup, param = "xs", infer = TRUE, adjust = "tukey"))
+```
+Just like before we can obtain fitted values of the model to create a scatterplot showing the relationships. We do this by using the `expand.grid()` function, where we can make different level combinations of all three predictors of interest: age centered, topography, and spell group. With this we can basically generate 100 observations for each level combination of the factors and confirm that this was correct using `xtabs()`.
+
+
+
+
+```{r Visualizing the fitted values of the final model}
+# Create a grid that has the predictor values we want for corresponding fitted values
+newdat_final <- expand.grid(
+  Age_min_c = seq(min(slow_dat$Age_min_c), max(slow_dat$Age_min_c), length.out = 100),
+  topography_ec = levels(slow_dat$topography_ec),
+  SpellGroup = levels(slow_dat$SpellGroup)
+  
+)
+
+# Inspect the reference grid created
+xtabs(~ SpellGroup + topography_ec , newdat_final)
+
+# Add the predicted values back into the grid + adjust the age and relevel topography
+newdat_final <- newdat_final %>%
+  mutate(log_absolute_power = predict(mod_groupv2, newdata = newdat_final, level = 0),
+         Age = Age_min_c + 15,
+         topography = factor(topography_ec,
+                             levels = c("frontal", "temporal", "parietal", "occipital")))
+
+# Creating a pretty scatter plot
+slow_dat %>%
+  ggplot(aes(x = Age, y = log_absolute_slow_power, color = SpellGroup, shape = SpellGroup)) +
+  geom_point(size = 1, alpha = .7) +
+  geom_line(data = newdat_final, aes(x = Age, y = log_absolute_power), size = 1) + 
+  facet_wrap(~topography) +
+  labs(title = "Fitted Values of Quadratic to Plateau Model Showcasing\n'Slow' Absolute Power Regressed onto Age by Topography\nBetween Spelling Groups",
+       y = "log of absolute power\n(slow frequencies)",
+       color = "Spell Group",
+       shape = "Spell Group") +
+  theme_clean()
+
+```
+### Quadratic to Plateau Model Residuals
+
+
+```{r Investigate the model fit of the quadratic to plateau model}
+# Preferred version
+r <- residuals(mod_groupv2_un, type = "normalized")
+
+qqnorm(r, main = "QQ-plot of standardized residuals")
+qqline(r, col = "firebrick", lwd = 1.8)
+
+# Alternative — looks nicer with ggplot2
+library(ggplot2)
+ggplot(data.frame(r = r), aes(sample = r)) +
+  stat_qq() +
+  stat_qq_line(color = "red") +
+  theme_minimal() +
+  labs(title = "Normal Q-Q plot of standardized residuals")
+
+hist(r, breaks = 25, freq = FALSE, 
+     main = "Standardized residuals + N(0,1) density",
+     xlab = "Standardized residual")
+curve(dnorm(x), col = "red", lwd = 2, add = TRUE)
+
+
+plot(mod_groupv2, 
+     resid(., type = "normalized") ~ fitted(.), 
+     abline = 0, main = "Residuals vs fitted (standardized)")
+
+plot(mod_groupv2, 
+     resid(., type = "normalized") ~ Age_min_c | SpellGroup, 
+     layout = c(2,2))   # if you want to stratify
+
+# Or base R version
+par(mfrow = c(2,2))
+qqnorm(r); qqline(r, col="red")
+hist(r, freq=FALSE); curve(dnorm(x), col="red", add=TRUE)
+plot(fitted(mod_groupv2), r, main="Residuals vs fitted"); abline(h=0, col="red")
+plot(r, type="p", main="Residuals in order"); abline(h=0, col="red")
+
+```
+
+
+
+### Investigating differences in absolute between Spelling Groups in 'Alpha' and 'Beta' frequencies
+
+
+```{r Investigating differneces in absolute power for alpha and beta}
+# Filter the data by frequency
+alpha_dat <- final_dat %>%
+  filter(FB == "alpha") %>%
+  mutate(log_absolute_alpha_power = log(absolute_power))
+beta_dat <- final_dat %>%
+  filter(FB == "beta") %>%
+  mutate(log_absolute_beta_power = log(absolute_power))
+
+
+#alph_mod <-
+
+lmer(log_absolute_alpha_power ~ Age_min_c + topography_ec + SpellGroup + (1|ID), alpha_dat) %>%
+  summary()
+
+lmer(log_absolute_beta_power ~ Age_min_c + topography_ec + SpellGroup + (1|ID), beta_dat) %>%
+  summary()
+```
+
