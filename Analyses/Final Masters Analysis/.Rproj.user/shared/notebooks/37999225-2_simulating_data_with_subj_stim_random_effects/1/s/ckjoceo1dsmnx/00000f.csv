@@ -1,0 +1,7 @@
+"0","# cross subject and item IDs; add an error term"
+"0","# nrow(.) is the number of rows in the table"
+"0","trials <- crossing(subjects, items)  %>%"
+"0","  mutate(e_si = rnorm(nrow(.), mean = 0, sd = sigma))"
+"0",""
+"0","# Show the first few rows"
+"0","head(trials)"

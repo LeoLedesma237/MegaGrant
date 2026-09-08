@@ -1,0 +1,8 @@
+"0","# Keep only variable of interest"
+"0","dat <- select(lexdec, Subject, Word, NativeLanguage, Frequency, Correct) "
+"0",""
+"0","# Center the covariate"
+"0","dat <- mutate(dat, CenteredFrequency = Frequency - mean(Frequency))"
+"0",""
+"0","# Get to know our data"
+"0","head(dat)"

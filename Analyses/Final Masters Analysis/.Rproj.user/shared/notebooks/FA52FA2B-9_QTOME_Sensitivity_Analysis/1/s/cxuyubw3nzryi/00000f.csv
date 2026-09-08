@@ -1,0 +1,2 @@
+"0","# Set the correct contrasts to the simulated data"
+"0","subjects_crossed_design_contrasts <- set_model_contrasts(subjects_crossed_design)"

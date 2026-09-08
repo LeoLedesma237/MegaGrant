@@ -1,0 +1,205 @@
+---
+title: "1) Estimating Power in Linear Mixed Models (lme4)"
+format:
+  html:
+    embed-resources: true
+---
+
+### Article: Estimating power in (generalized) linear mixed models: An open introdution and tutorial in R.
+
+by Levi Kumle, Melissa L. H. Vo, and Dejan Draschkow (2021)
+
+The function of this document is to write up the code from the paper above and detail how the simulation process for a power analysis works. We are creating thos document mostly to use as a reference but also to debug many code problems present in the original R code provuded by the authors. The original code is available below:
+
+- Notebook 1: https://lkumle.github.io/power_notebooks/Scenario1_notebook.html
+- Notebook 2: https://lkumle.github.io/power_notebooks/Scenario2_notebook.html
+- Notebook 3: https://lkumle.github.io/power_notebooks/Scenario3_notebook.html
+
+
+```{r load in packages, message= F, warning=F}
+# Doaload if needed
+#devtools::install_github("DejanDraschkow/mixedpower")
+
+# load in packages
+library(languageR) #lexdec dataset
+library(psych) # describe
+library(lme4) # glmer()
+library(simr) # makeGlmer()
+library(mixedpower) # mixedpower()
+library(dplyr)
+library(ggplot2)
+library(here)
+```
+
+
+## Part 1: Simulating power using a good and already available dataset
+
+
+
+## Part 2: Simulating power using a good and already available dataset with two random effects
+
+
+
+## Part 3: Simulating power by generating data from scratch
+
+#### 3.1 Exploring the data
+
+If there is no available good dataset to use to estimate power, then the next best choice is to build the data and the model **from scratch**. However, we need to be very cautious when doing this because any mispecification will result in incorrect power estimation. Essentially, when will need to figure out the following to simulate the data.
+
+- fixed-effect coefficients
+- variance components associated with the random effects
+
+For demonstrations, we will be using the *lexdec* dataet from the *languageR* package. 
+
+```{r exploring the lexdec dataset, message= F}
+# Keep only variable of interest
+dat <- select(lexdec, Subject, Word, NativeLanguage, Frequency, Correct) 
+
+# Center the covariate
+dat <- mutate(dat, CenteredFrequency = Frequency - mean(Frequency))
+
+# Get to know our data
+head(dat)
+str(dat)
+describe(dat)
+
+# Unique factor levels for random variables
+length(unique(dat$Subject))
+length(unique(dat$Word))
+
+# Visualize how the variables relate to the outcome
+dat %>%
+  mutate(Frequency_cat = ifelse(CenteredFrequency < 0, "low", "high")) %>%
+  group_by(Subject, Frequency_cat, NativeLanguage) %>%
+  summarise(Performance = mean(Correct == "correct")) %>%
+  ggplot(aes(x = NativeLanguage, y = Performance, fill = Frequency_cat)) +
+  geom_boxplot() +
+  theme_minimal()
+```
+
+Looking at our lexdec dataset we see that we have 21 participants, 79 unique words, and when looking at performance, which we aggregated into proportion of correct trials, the common words (high frequency) are typically performed well between native and non-native speakers. However, although both speakers perform worse for the less common words (low frequency), the non native speakers take a much larger hit in performance and also show a lot more variability.
+
+#### 3.2 Fitting a logistic mixed effects model
+
+Since we have the dataset available more or less for what we want to study, kinda like what we did in section 1, we can fit a logisitic mixed effects model just to get a more accurate representation of the fixed and random effects, rather than just guessing. Although this kinda feels like cheating, all we are doing is better trying to understand what are fixed effects and variances for our random effects are, that's it. In other words, we are **justifying our parameters** for data simulation. 
+
+```{r Fitting the glmer model to lexdec}
+# Fitting the glmer model to our data
+modelY <- glmer(Correct ~ NativeLanguage * CenteredFrequency + (1 | Subject) + (1 | Word),
+               family = "binomial", data = dat)
+
+summary(modelY)
+```
+#### 3.3 Building (simulating) a dataset from scratch (Design Matrix)
+
+
+This section is just to create a dataframe that is fille with predictor information- **no outcome information**. 
+
+We are going to start by simulating a dataset with 20 subjects and 100 words. Obviously we can pick any other numbers but these are going to function as our starting point. We are then going to use the **expand.grid()** to function to fully cross our random variables. 
+
+```{r simulating or generating random variables from scratch}
+# 1. create subject IDs  -> let's start with 20 subjects
+subject_ID <- (1:20)
+
+# 2. create stimuli IDS -> every subject should read 100 words
+stimuli_ID <- (1:100)
+
+# 3. combine subject IDs and stimui IDs
+artificial_data <- expand.grid(Subject = subject_ID, Word = stimuli_ID) %>%
+  arrange(Subject)
+
+# View the first few observations of the random var data
+head(artificial_data)
+
+# Check that the factors are crossed
+xtabs(~Word + Subject, artificial_data) %>%
+  head()
+```
+
+From the 'artificial_data' object we created above, the dimensions are (`r dim(artificial_data)`), where the first number represents the rows and the second number represents the number of variables (Subject and Word). There are 20 subjects and each one has the same 100 words. Since we are interested in testing the effect of Native Language, now we can generate our first predictor, where 10 subjects will be Native while the remaining are not. Since each person will be given 100 words, we can make the first 10 x 100 rows correspond to Native and the remaining 10 x 100 rows to no Natives. For our matrix, however, we will effect code this variable such that the values will represent -5 and 5 rather than 0 and 1.  
+
+
+```{r simulating or generating categorical fixed variables from scratch}
+# 1. create vector including identifier for native language
+native_language <- c(rep(-0.5, 1000), rep(0.5, 1000))
+
+# 2. add vector to data set
+artificial_data["NativeLanguage"] <- native_language
+```
+
+Now we need to simulate the continuous covariate that corresponds to frequency ratings, or how common the presented word is. Looking back at the lexdec data, we can use the descriptives to note that the mean and standard deviation of frequencies is `r mean(dat$Frequency)`and `r sd(dat$Frequency)` respectively. Thus we can use this information to randomly sample 100 observations (same number as the number of given words) from a normal distribution with a mean of 5 (similar to the data) and a standard deviation of 1 (also similar to our data).
+
+After this vector is sampled, we will duplicate it for each participant, in other words repeat it 20 times. Then we can also incorporate its centered version as well.
+
+```{r simulating or generating continuous fixed variables from scratch}
+# Set seed for reproducibility
+set.seed(123)
+
+#  1. generate frequency ratings
+frequency_ratings <- rnorm(100, mean = 5, sd = 1) # draw 100 frequency rating (one for every word)
+
+# 2. add to data frame
+artificial_data["Frequency"] <- rep(frequency_ratings, 20) # multiply by 20 (for every subject)
+artificial_data$CenteredFrequency <- scale(artificial_data$Frequency, scale = F)
+```
+
+#### 3.4 Building a model from scratch
+
+The essential goal to make power simulation work is to have a model object. However, we have a problem, we do not have an outcome in our data. So instead, we will use the makeGlmer() to essentially generate a model object without us needing an outcome, and we do this by prodiving the data skeleton along with the fixed and random effect parameters that we think best explain the relationship of the predictors the the outcome, which we got from our initial model fitting to the lexdec dataset.
+
+This also bypasses our initial problem of running a power analysis on our original data, because that would result in us using our model object from our sample. Notice that here, we actually constructed the data skeleton with code, with inspiration from the raw data, and then used some information from the original model for our fixed effects. 
+
+
+```{r Building the model from scratch}
+# 1. Extract the fixed effects from the model
+fixed_effects <- fixef(modelY)
+names(fixed_effects) <- NULL
+
+# 2. Extract the variances of the random effects
+vc <- VarCorr(modelY)
+random_variance <- list(vc$Word[1], vc$Subject[1])
+
+# #. Generate simulated predicted values
+artificial_glmer <- makeGlmer(formula = Correct ~ NativeLanguage * CenteredFrequency + (1 | Subject)+ (1 | Word),
+                              family = "binomial", 
+                              fixef = fixed_effects,
+                              VarCorr = random_variance, 
+                              data = artificial_data)
+
+# lets have a look!
+summary(artificial_glmer)
+```
+
+#### 3.5 Power analysis
+
+Now that we have the data and a model fit to it, we can actually start the power analysis. There are two ways to do it in the provided source. The first is to use functions from the *simr* package and the other is to use the **mixedpower()** function from the *mixedpower* package, available through devtools.
+
+```{r Power analyses}
+
+####### Skipping simr for now but you can look it up in the Notebooks
+
+####### Mixed Power
+
+# Specify parameters about the simulation processes
+steps <- c(20, 40, 60, 80) # which sample sizes do we want to look at?
+critical_value <- 2 # which t/z value do we want to use to test for significance?
+n_sim <- 1000 # how many single simulations should be used to estimate power?
+
+# RUN SIMULATION
+#power_FLP <- mixedpower(model = artificial_glmer, 
+#                        data = artificial_data,
+#                        fixed_effects = c("NativeLanguage", "CenteredFrequency"),
+#                        simvar = "Subject",
+#                        steps = steps,
+#                        critical_value = critical_value, 
+#                        n_sim = n_sim)
+
+# Save the output:
+#saveRDS(power_FLP, here("R_power_examples", "output", "power_FLP.Rds"))
+
+# Load the simulation analysis from mixedpower
+power_FLP <- readRDS(here("R_power_examples", "output", "power_FLP.Rds"))
+
+# Show the power analysis output
+power_FLP
+```

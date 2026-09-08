@@ -1,0 +1,6 @@
+"0","# Introducing log power and logit relative power"
+"0","comb_FFT <- comb_FFT %>%"
+"0","  mutate("
+"0","    log_power = log(power),"
+"0","    logit_rel_power = log(rel_power/(1 - rel_power))"
+"0","  )"

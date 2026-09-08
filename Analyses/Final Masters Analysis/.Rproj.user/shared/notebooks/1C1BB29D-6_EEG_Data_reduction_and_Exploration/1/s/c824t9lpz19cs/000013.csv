@@ -1,0 +1,7 @@
+"0","final_dat %>%"
+"0","  ggplot(aes(x = Age, y = log_absolute_power, color = Spell_group)) +"
+"0","  facet_wrap(~FB + region, scales = ""free"") +"
+"0","  geom_point(size = .2, alpha = .7) +"
+"0","  geom_smooth(se = F) +"
+"0","  labs(x = ""Age (Years)"", y = ""Log(Absolute Power)"", title = ""Log(Absolute Power) with Age by Frequency Band and Region\n(Ignoring Hemisphere)"") + "
+"0","  theme_clean()"

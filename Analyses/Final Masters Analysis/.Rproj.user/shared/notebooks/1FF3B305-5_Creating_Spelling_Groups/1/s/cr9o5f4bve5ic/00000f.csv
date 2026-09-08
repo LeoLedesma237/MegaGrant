@@ -1,0 +1,4 @@
+"0","# Create a cross tabulation"
+"0","tab_xtab(var.row = comb_dat$Spell_Group_Raw, "
+"0","         var.col = comb_dat$Spell_Group_EAP, "
+"0","         title = ""Group Endorsement by Spelling Score Approach Contingency Table"", show.row.prc = TRUE)"

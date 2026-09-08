@@ -1,0 +1,4 @@
+"0","# Visualizing the Final Dataset for Analysis"
+"0","head(final_dat,20) %>%"
+"0","  kbl(caption = ""Final dataset ready for analysis"") %>%"
+"0","  kable_paper(full_width = F)"

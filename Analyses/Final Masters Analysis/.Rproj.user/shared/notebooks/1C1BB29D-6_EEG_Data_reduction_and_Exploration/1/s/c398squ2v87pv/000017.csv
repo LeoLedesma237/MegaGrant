@@ -1,0 +1,7 @@
+"0",""
+"0","# Generate APF plots for Age Groups"
+"0","APF_dat %>%"
+"0","  ggplot(aes(x = Age_group, y = APF)) +"
+"0","  geom_boxplot( ) +"
+"0","  labs(title = ""Avg Occipital APF Seems Consistent Across Age"") +"
+"0","  theme_clean()"

@@ -1,0 +1,7 @@
+"0","# Viewing design matrix"
+"0","#sim_data %>%"
+"0","#  mutate(Intercept = 1) %>%"
+"0","#  select(ID, Intercept,  SexM:log_absolute_power) %>%"
+"0","#  mutate(across(where(is.numeric), ~ round(., 3))) %>%"
+"0","#  head(30) %>%"
+"0","#  view()"

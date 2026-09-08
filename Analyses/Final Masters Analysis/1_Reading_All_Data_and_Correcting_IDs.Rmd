@@ -1,0 +1,389 @@
+---
+title: "1) Reading in All Data And Correcting IDs"
+output: html_document
+date: "2026-06-26"
+---
+
+
+```{r Universal code block setting}
+knitr::opts_chunk$set(echo = FALSE)
+knitr::opts_chunk$set(message = FALSE)
+knitr::opts_chunk$set(comment = NULL)
+knitr::opts_chunk$set(warning = FALSE)
+
+```
+
+
+```{r loading in the packages, warning = FALSE, echo = TRUE}
+library(readxl)
+library(tidyverse)
+library(kableExtra)
+library(psych)
+library(gt)
+```
+
+```{r specifying inputs and outputs}
+# Specify the pathway to where the MegaGrant data is
+raw_data_input <- '\\\\files.times.uh.edu/labs/MIR_Lab/MEGAGRANT/STUDY 1/FINAL_DS'
+
+# Specify the pathway to where the EEG data is
+eegPath <- "\\\\files.times.uh.edu/labs/MIR_Lab/MEGAGRANT/STUDY 1/FINAL_DS/EEG/rsEEG"
+  
+# Specify the output to where we want our data to be saved
+clean_data_output <- "~/GitHub/MegaGrant/Analyses/Final Masters Analysis/data"
+```
+
+
+### Part 1: Loading in Behavioral Data and Doing Some Minor Data Cleaning
+
+Here we are loading demographic, WHOQOL_BRIEF, medical, CFIT, and ARFA Spelling information 
+
+- demographic information (age, sex) - GOLD STANDARD FOR IDS
+- Medical information (to remove neurodevelopmental disorders or head injuries)
+- the item scores for the CFIT (non-verbal fluid intelligence test)
+- the items for the ARFA spelling task
+
+The read in data is all coming from the server: Specifically in this pathway:
+
+- '\\files.times.uh.edu\labs\MIR_Lab\MEGAGRANT\STUDY 1'
+
+There are incorrect/typo IDs in all of these datasets except for:
+
+- 'MegaGrant_TBL_Database_Newest_MCh with duration.xlsx'
+
+Thus, the IDs within this excel file, which will be saved as the object demo, will be the ones **chosen to represent the true IDs of MegaGrant**. This means that IDs in other datasets that differ from demo will be **instantly dropped**.
+
+
+```{r load in the predictors covariates and outcome data, warning= FALSE, results='hide'}
+# Set the working directory
+Mega <- raw_data_input
+setwd(Mega)
+
+# load in the data 
+demo <- read_excel("Demo/MegaGrant_TBL_Database_Newest_MCh with duration.xlsx")
+CFIT <- read.csv("CFIT/CFIT.scores.csv")
+ARFA <- read.csv("ARFA/ARFA.Spelling.Raw.Scores.csv")
+M1_org <- read_excel("Medical_History/TBL_WHOQOL_BRIEF_Medical_S1_S3_DM_06.xlsx",  sheet = "med s1")
+M3_org <- read_excel("Medical_History/TBL_WHOQOL_BRIEF_Medical_S1_S3_DM_06.xlsx",  sheet = "med s3")
+W1_org <- read_excel("Medical_History/TBL_WHOQOL_BRIEF_Medical_S1_S3_DM_06.xlsx",  sheet = "whoqol s1")
+W3_org <- read_excel("Medical_History/TBL_WHOQOL_BRIEF_Medical_S1_S3_DM_06.xlsx",  sheet = "whoqol s3")
+
+# Combine datasets from S1 and S3 together
+M1 <- select(M1_org, ID, HeadTrauma, Health2epilepsy, Health2autism, ADD, Dislexia)
+M3 <- select(M3_org, ID, HeadTrauma, Health2epilepsy, Health2autism, ADD, Dislexia)
+W1 <- select(W1_org, ID, sleep = WHOQOL16, neg_feel = WHOQOL26)
+W3 <- select(W3_org, ID, sleep = WHOQOL16, neg_feel = WHOQOL26)
+
+M_comb <- unique(rbind(M1, M3))
+W_comb <- unique(rbind(W1, W3))
+
+# Clean up CFIT data
+CFIT2 <- select(CFIT, ID, CFITSub1Item1:CFITSub4Item8, Raw.Scores)
+CFIT3 <- data.frame(sapply(CFIT2, function(x) as.numeric(x)))
+CFIT3[is.na(CFIT3)] <- 0
+CFIT4 <- select(CFIT3, - Raw.Scores)
+
+# Rename the ARFA variables
+names(ARFA) <- c("ID", paste0("SP_ER",1:22), "Total_Error")
+
+# Have both ID variables be numeric
+demo$ID <- as.numeric(demo$ID)
+M_comb$ID <- as.numeric(M_comb$ID)
+W_comb$ID <- as.numeric(W_comb$ID)
+CFIT4$ID <- as.numeric(CFIT4$ID)
+ARFA$ID <- as.numeric(ARFA$ID)
+
+# Change additional variables to numeric
+W_comb$sleep <- as.numeric(W_comb$sleep)
+W_comb$neg_feel <- as.numeric(W_comb$neg_feel)
+
+# If there are NA's for IDs drop them
+demo <- drop_na(demo, ID)
+M_comb <- drop_na(M_comb, ID)
+W_comb <- drop_na(W_comb, ID)
+CFIT4 <- drop_na(CFIT4, ID)
+ARFA <- drop_na(ARFA, ID)
+
+# Select variables of interest from demographics
+demo <- demo %>%
+  select(S1 = `S1 reg-list`,
+         S3 = `S3 Reg-list`, 
+         ID, 
+         Sex, 
+         Age, 
+         Group) %>%
+  mutate(ID = as.numeric(ID),
+         Age = as.numeric(Age)) 
+
+```
+
+### Demographics + True IDS
+
+```{r Showing the Demographics data head}
+# Print the Demo Dataset
+head(demo) %>%
+  kbl() %>%
+  kable_paper(full_width = F)
+
+```
+
+### WHOQOL_BRIEF (Kept only 2 items)
+
+```{r Showing the WHOQOL_BRIEF data head}
+# Print the WHOQOL_BRIEF Dataset
+head(W_comb) %>%
+  kbl() %>%
+  kable_paper(full_width = F)
+
+```
+
+### Medical Questionnaire (Kept 5 items)
+
+```{r Showing the Medical data head}
+# Print the Medical Dataset
+head(M_comb) %>%
+  kbl() %>%
+  kable_paper(full_width = F)
+
+```
+
+### CFIT Fluid Intelligence (46 items)
+
+```{r Showing the CFIT data head}
+# Print the CFIT Dataset
+head(CFIT4) %>%
+  kbl() %>%
+  kable_paper(full_width = F)
+
+```
+
+
+### ARFA Spelling Subtest (22 Items)
+
+```{r Showing the ARFA data head}
+# Print the ARFA Dataset
+head(ARFA) %>%
+  kbl() %>%
+  kable_paper(full_width = F)
+
+```
+
+### Part 2: Loading in the EEG FFT Data
+
+FFT denotes the data files that include **power spectra** information of our resting-state EEG eyes-closed outcome. All we are doing is reading in the data that was originally saved in individual .csv files and combining them into one giant dataset plus a little bit of data cleaning.
+
+**Important:** There are 3 EEG files that essentially have a duplicate with a different preprocessed file name. Meaning that when you extract the IDs from all the processed file names and use the unique() function (as we have done in the code), the duplicate data goes away. This is done for both the FFT and the QC section.
+
+```{r Reading in the fft EEG files}
+# Get all file names and create an empty list
+all_fft_files <- list.files(path = file.path(eegPath, "fft"), pattern = "fft")
+all_fft_files_full <- file.path(eegPath, "fft", all_fft_files)
+all_files_list <- list()
+
+# Read in each file one by one and save within a list
+for(ii in 1:length(all_fft_files)){
+  # Read in the file
+  read_file <- read.csv(all_fft_files_full[ii])
+  # Saves the file name within the file
+  read_file$filename <- all_fft_files[ii]
+  # Save the recording into a list
+  all_files_list[[ii]] <- read_file
+  names(all_files_list)[ii] <- all_fft_files[ii]
+}
+
+# Combine the FFT files into one dataset
+FFT_dat <- do.call(rbind, all_files_list)
+
+# Create a function that accurately extracts the ID of the file
+clean_eeg_ids <- function(x) {
+  x_gsub <- gsub("_preproc_fft.csv|EyesClosed|_RAW|_ RAW|RAW_|_", "", x)
+  return(x_gsub)
+}
+
+# Recover the ID for each recording + specify condition
+FFT_dat <- FFT_dat %>%
+  mutate(ID = clean_eeg_ids(filename),
+         Condition = ifelse(grepl("Open", filename), "Open", "Closed"))
+
+# Drop the file name information and use unique()
+FFT_dat <- select(FFT_dat, - filename) %>%
+  unique()
+
+# Remove row names
+row.names(FFT_dat) <- NULL
+
+# Force all IDs to be numeric
+FFT_dat <- mutate(FFT_dat, ID = as.numeric(ID))
+
+```
+
+
+```{r Print information on the fft dataset}
+# Show the information of the FFT data
+head(FFT_dat, 8) %>%
+  kbl(caption = paste0("First few rows of the FFT Dataset")) %>%
+  kable_paper(full_width = F)
+```
+
+
+### Loading EEG Preprocessing QC
+
+Here we are loading the QC performance for each EEG recording and only keeping a few variables of interest.
+
+```{r Reading in the EEG Preprocessing QC Results}
+# load in the EEG QC
+EEG_QC <- read.csv(file.path(eegPath, "EEG_Preprocessing_Summary_Statistics_EC.csv"))
+
+# Convert data to long format to get number of channels removed (80% threshold)
+chan_rmvthresh <- .90
+
+# Obtain the number of removed channels
+EEG_QC$chan_rmv <- rowSums(select(EEG_QC, int_AF3:int_TP8) > chan_rmvthresh)
+EEG_QC$chan_rmv2 <- rowSums(select(EEG_QC, int_AF3:int_TP8) > .99)
+
+# Select variables of interest
+EEG_QC2 <- EEG_QC %>% 
+  select(subject,
+         start_trial = s5_rjctbadtrials_initialtrials,
+         start_globvar = s2_eegvarsum_globalvar,
+         end_trial = endTrialnum,
+         end_globvar = s10_eegvarsum_globalvar,
+         int_total,
+         #elec_pop = s4_rmvbadchan_pop_chan,
+         #elec_flat = s4_rmvbadchan_flat_chan,
+         #elec_nois = s4_rmvbadchan_noise_chan,
+         chan_rmv,
+         chan_rmv2) %>%
+  mutate(trials_rmv = start_trial - end_trial)
+
+# Use the same cleaning as above on this data
+EEG_QC2 <- EEG_QC2 %>%
+  mutate(ID = clean_eeg_ids(subject),
+         Condition = ifelse(grepl("Open", subject), "Open", "Closed"))
+
+# Drop the subject name information and use unique() - at the same time change order of variables
+EEG_QC2 <- select(EEG_QC2, ID, Condition, start_trial,end_trial, trials_rmv, start_globvar, everything(), - subject) %>%
+  unique()
+
+# Force all IDs to be numeric
+EEG_QC2 <- mutate(EEG_QC2, ID = as.numeric(ID))
+```
+
+```{r Show the head for the QC data}
+# Show the information of the QC data
+head(EEG_QC2, 8) %>%
+  kbl(caption = paste0("First few rows of the QC Dataset")) %>%
+  kable_paper(full_width = F)
+```
+
+### Part 3: Fixing a Minor ID Problem in the EEG Files
+
+There is an excel file on the server that shows which IDs are typos and need to be renamed. The table below shows us the typo id (ID) and the correct ID name (RAW). Here we will be renaming the typos to the correct ID so that we do not need to throw out unecessary data.
+
+Interestingly- it seems that the data that corresponds to the typo ID has already been corrected for in the data since the proper ID information is already present. Thus, we don't really need to do anything in this section since we already had the data for the proper ID name to begin with. 
+
+```{r Removing problematic IDs}
+# Read in the EEG mismatch dataset
+megaGrant_dataInventory <- read_excel(file.path(eegPath, "MegaGrant_TBL.xlsx"))
+
+# Check something
+eeg_id_mistmatch <- megaGrant_dataInventory[megaGrant_dataInventory$ID != megaGrant_dataInventory$RAW,]
+
+# Select the variables of interest and create a table
+eeg_id_mistmatch_tab <- eeg_id_mistmatch %>%
+  drop_na(ID) %>%
+  select(ID, RAW)
+
+# Print the table
+cat("Below are IDs that have been incorrectly labeled (ID) and need to be renamed to the RAW values\n")
+eeg_id_mistmatch_tab %>%
+  kbl() %>%
+  kable_paper(full_width = F)
+
+# Visual inspection of the data
+EEG_QC2 %>%
+  filter(ID %in% c("34857", "34867"))
+EEG_QC2 %>%
+  filter(ID %in% c("97911", "97991"))
+
+```
+
+
+### Part 4: Removing All IDs From All Datasets That Do Not Match Demo
+
+```{r Removing all IDs that do not match demo, echo = TRUE}
+# Create a list that contains all datasets 
+all_dat <- list(
+  demo = demo,
+  M_comb = M_comb,
+  W_comb = W_comb,
+  CFIT4 = CFIT4,
+  ARFA = ARFA,
+  FFT_dat = FFT_dat,
+  EEG_QC2 = EEG_QC2
+)
+
+# Keep only the observations that had IDs that match demo
+all_dat2 <- lapply(all_dat, function(x){filter(x, ID %in% demo$ID)})
+
+# Compare the ID differences before and after the removal
+compare_df <- cbind(
+  do.call(c, lapply(all_dat, function(x) length(unique(x$ID)))),
+  do.call(c, lapply(all_dat2, function(x) length(unique(x$ID))))
+) %>%
+  data.frame() %>%
+  mutate(id_lost = X1-X2)
+
+# Print the table
+names(compare_df) <- c("Original", "Corrected", "Difference")
+compare_df %>%
+  kbl() %>%
+  kable_paper(full_width = F)
+
+
+# Paste a note on the number of unique IDs
+cat("Based on the table above, our intital number of unique real IDs is", length(unique(demo$ID)), "although, not everyone will probably have demographic data!")
+```
+
+
+### MegaGrant Sample Demographics
+
+```{r Get the demographics of the sample}
+# Create a summary table for Total Errors Score 
+describe(all_dat2$demo$Age) %>%
+  round(2) %>%
+  gt() %>%
+  tab_header(title = "Descriptive Statistics of Demo Age") %>%
+  tab_style(
+    style = cell_text(align = "center"),
+    locations = cells_body(columns = everything()))
+
+# Get the sex of the sample
+table(all_dat2$demo$Sex)
+```
+
+### Save the Corrected ID Datasets Independently
+
+Here we will be saving 7 datasets
+
+- demo
+- Medical Questionnaire
+- WHOOQL
+- CFIT
+- ARFA
+- FFT data
+- EEG QC
+
+```{r Saving the ID corrected datasets, echo = TRUE, warning = FALSE}
+# Change the working directory
+setwd(clean_data_output)
+
+# Save all of the datasets
+saveRDS(all_dat2$demo, "1_demo.rds")
+saveRDS(all_dat2$M_comb, "1_Medical.rds")
+saveRDS(all_dat2$W_comb, "1_WHOQL.rds")
+saveRDS(all_dat2$CFIT4, "1_CFIT.rds")
+saveRDS(all_dat2$ARFA, "1_ARFA.rds")
+saveRDS(all_dat2$FFT_dat, "1_FFT.rds")
+saveRDS(all_dat2$EEG_QC2, "1_EEGqc.rds")
+```

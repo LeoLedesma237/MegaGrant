@@ -1,0 +1,2 @@
+"0","# Run the function"
+"0","subjects_crossed_design <- create_design_variables(subjects_crossed)"

@@ -1,0 +1,5 @@
+"0","comb_FFT <- comb_FFT %>%"
+"0","  group_by(ID, channel) %>%"
+"0","  mutate(rel_power = power / sum(power, na.rm = TRUE)) %>%"
+"0","  ungroup()"
+"0",""

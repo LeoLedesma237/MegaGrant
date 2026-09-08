@@ -1,0 +1,4 @@
+"0","# Reading in the combined data"
+"0","setwd(raw_data_input)"
+"0","dat <- readRDS(""6_final.rds"")"
+"0",""

@@ -1,0 +1,5 @@
+"0","# 1. create vector including identifier for native language"
+"0","native_language <- c(rep(-0.5, 1000), rep(0.5, 1000))"
+"0",""
+"0","# 2. add vector to data set"
+"0","artificial_data[""NativeLanguage""] <- native_language"

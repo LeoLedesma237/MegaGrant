@@ -1,0 +1,33 @@
+{
+    "id": "807BE6A2",
+    "path": "~/GitHub/MegaGrant/Analyses/Final Masters Analysis/9_QTOME_Sensitivity_Analysis.Rmd",
+    "project_path": "9_QTOME_Sensitivity_Analysis.Rmd",
+    "type": "r_markdown",
+    "hash": "225288718",
+    "contents": "",
+    "dirty": false,
+    "created": 1787700697475.0,
+    "source_on_save": false,
+    "relative_order": 1,
+    "properties": {
+        "tempName": "Untitled1",
+        "source_window_id": "",
+        "Source": "Source",
+        "cursorPosition": "387,0",
+        "scrollLine": "386",
+        "rmdVisualMode": "false",
+        "rmdVisualCollapsedChunks": "",
+        "rmdVisualModeLocation": "258:117",
+        "rmdVisualWrapConfigured": "true",
+        "docOutlineVisible": "1",
+        "docOutlineSize": "155"
+    },
+    "folds": "",
+    "lastKnownWriteTime": 1788649603,
+    "encoding": "UTF-8",
+    "collab_server": "",
+    "source_window": "",
+    "last_content_update": 1788649603820,
+    "read_only": false,
+    "read_only_alternatives": []
+}

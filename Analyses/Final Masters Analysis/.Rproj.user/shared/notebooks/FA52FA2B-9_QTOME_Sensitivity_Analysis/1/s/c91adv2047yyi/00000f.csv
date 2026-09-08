@@ -1,0 +1,111 @@
+"0"," single_run"
+"1","function(
+"
+"1","    filename  = NULL, # Use to create a .csv
+"
+"1","    iteration = NA,   # Number of data simulation + model fitting + estimate extraction
+"
+"1","    seed      = NULL, # Specify seed before data creation to replicate
+"
+"1","    sim_type  = ""parametric"", #(""parametric"" or ""resampled"")
+"
+"1","    ...
+"
+"1",") {
+"
+"1","  
+"
+"1","  # Set the seed if one was provided
+"
+"1","  if (!is.null(seed)) {
+"
+"1","    set.seed(seed)
+"
+"1","  }
+"
+"1","  
+"
+"1","  # 1. Conditionally simulate data based on sim_type
+"
+"1","  if (sim_type == ""parametric"") {
+"
+"1","    dat_sim <- my_sim_data(...)
+"
+"1","  } else if (sim_type == ""resample"") {
+"
+"1","    dat_sim <- my_sim_data2(...)
+"
+"1","  } else {
+"
+"1","    stop(""Invalid 'sim_type'. Must be either 'parametric' or 'resample'."")
+"
+"1","  }
+"
+"1","  
+"
+"1","  # 2. Fit the model
+"
+"1","  fit <- fit_sim_model(dat_sim)
+"
+"1","  
+"
+"1","  # 3. Check for failure
+"
+"1","  failure_row <- handle_model_failure(fit, iteration, seed, ...)
+"
+"1","  if (!is.null(failure_row)) return(failure_row)
+"
+"1","  
+"
+"1","  # 4. Extract the model results
+"
+"1","  sim_results <- extract_sim_results(fit$model) %>%
+"
+"1","    mutate(
+"
+"1","      iteration = iteration,
+"
+"1","      seed = seed,
+"
+"1","      warnings = fit$warnings,
+"
+"1","      errors = fit$errors
+"
+"1","    )
+"
+"1","  
+"
+"1","  # 5. Add parameter info into sim_results (However ignore if arguments == those below)
+"
+"1","  run_params <- list(...)
+"
+"1","  for (name in names(run_params)) {
+"
+"1","    if (!name %in% c(""data"", ""mod"", ""filename"") && length(run_params[[name]]) == 1) {
+"
+"1","      sim_results[name] <- run_params[[name]]
+"
+"1","    }
+"
+"1","  }
+"
+"1","  
+"
+"1","  # 6. Save current sim_results into a .csv and append it
+"
+"1","  if (!is.null(filename)) {
+"
+"1","    append <- file.exists(filename)
+"
+"1","    write_csv(sim_results, filename, append = append)
+"
+"1","  }
+"
+"1","  
+"
+"1","  # Return the simulation results (for single usage)
+"
+"1","  sim_results
+"
+"1","}
+"

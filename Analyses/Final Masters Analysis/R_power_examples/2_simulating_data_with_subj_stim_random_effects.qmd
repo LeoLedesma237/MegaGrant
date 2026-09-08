@@ -1,0 +1,395 @@
+---
+title: "Simulating Data with Subject and Stimuli Random Effects Plus a Power Analysis"
+format:
+  html:
+    embed-resources: true
+---
+
+This code is designed for lme4 functions but regardless it is a good learning resource for simulating complex data and then running a power analysis on it.
+
+
+```{r load in packages, echo = T, warning = F, message = F}
+# load required packages
+library("lme4")        # model specification / estimation
+library("lmerTest")    # provides p-values in the output
+library("tidyverse")   # data wrangling and visualisation
+```
+
+```{r set seed}
+set.seed(8675309)
+```
+
+
+### Part 1: Specifying the data generation parameters
+
+#### 1.1 Establish the data-generating parameters
+
+```{r establishing the data generating parameters}
+# set all data-generating parameters
+beta_0  <- 800 # intercept; i.e., the grand mean
+beta_1  <-  50 # slope; i.e, effect of category
+omega_0 <-  80 # by-item random intercept sd
+tau_0   <- 100 # by-subject random intercept sd
+tau_1   <-  40 # by-subject random slope sd
+rho     <-  .2 # correlation between intercept and slope
+sigma   <- 200 # residual (error) sd
+```
+
+#### 1.2 Specifying the sampling process
+
+```{r specifying the sampling process}
+# set number of subjects and items
+n_subj     <- 100 # number of subjects
+n_ingroup  <-  25 # number of items in ingroup
+n_outgroup <-  25 # number of items in outgroup
+
+```
+
+
+### Part 2: Generate the random effects
+
+#### 2.1 Simulate the sampling of the stimulus items
+
+Creating a dataframe with `r n_ingroup + n_outgroup` rows, where each row contains information about the item id (they are all unique), the category of that item (ingroup or outgroup), how the item category is coded (-0.5, 0.5), and the influence of that item on the outcome (item specific intercept).
+
+```{r simulate the sampling of the stimulus items}
+# simulate a sample of items
+n_items <- n_ingroup + n_outgroup
+
+items <- data.frame(
+  item_id = seq_len(n_items),
+  category = rep(c("ingroup", "outgroup"), c(n_ingroup, n_outgroup)),
+  X_i = rep(c(-0.5, 0.5), c(n_ingroup, n_outgroup)),
+  O_0i = rnorm(n = n_items, mean = 0, sd = omega_0)
+)
+
+# Print the first few observations
+head(items)
+```
+
+#### 2.2 Simulate the sampling of subjects
+
+This section is a bit more complex since we are simulating two random effects for subjects which include the random intercepts (individual effects on the overall intercept) and the random slopes (individual effects on the fixed slope). Additionally, we are simulating that these random variables are also correlated, which is specified with `rho`. 
+
+So we first start by creating a **variance-covariance matrix** for the random effects (**G Matrix**), where it has the variances for the random intercepts `tau_0^2` and the random slopes `tau_1^2` on the diagonal and the covariance between them off the diagonal `rho * tau_0 * tau_1`. Once this matrix is constructed, we use is as an input for the `mvnorm()` function from the *MASS* package, which will produce subject level random intercepts and slopes that have that specified correlation between them, which then we can incorporate into the subjects dataframe. 
+
+```{r simulate the sampling of subjects}
+# calculate random intercept / random slope covariance
+covar <- rho * tau_0 * tau_1
+
+# put values into variance-covariance matrix
+cov_mx  <- matrix(
+  c(tau_0^2, covar,
+    covar,   tau_1^2),
+  nrow = 2, byrow = TRUE)
+
+# generate the by-subject random effects
+subject_rfx <- MASS::mvrnorm(n = n_subj,
+                             mu = c(T_0s = 0, T_1s = 0),
+                             Sigma = cov_mx)
+
+# combine with subject IDs
+subjects <- data.frame(subj_id = seq_len(n_subj),
+                       subject_rfx)
+
+# Print the first few observations
+head(subjects)
+```
+
+#### 2.3 Checking our random effect values
+
+Here we are checking whether the standard deviation of the random effects that we simulated for stimuli and subjects are similar to the ground truth we specified in the beginning. We see that overall they are similar but not the same. This is interesting because essentially, we used functions to draw samples from the population distributions we set, yet the mismatch shows us the consequence of only **sampling error** (there is no other noise embedded into this).
+
+```{r checking our random effect values}
+data.frame(
+  parameter = c("omega_0", "tau_0", "tau_1", "rho"),
+  value = c(omega_0, tau_0, tau_1, rho),
+  simulated = c(
+    sd(items$O_0i),
+    sd(subjects$T_0s),
+    sd(subjects$T_1s), 
+    cor(subjects$T_0s, subjects$T_1s)
+  )
+)
+```
+
+#### 2.4 Simulating trials (encounters)
+
+Here we use the `crossing()` function from the *tidyr* package to fully cross our random variables. In other words, every subject now has all trial data nested within them. Additionally we also introduced the error variable into the data, notice that the error values do not repeat within subjects, they are fully random, unlike the item random effects which repeat the same way within subjects, since they are specific to the unique stimulus that it corresponds to.
+
+```{r simulation trials or encounters}
+# cross subject and item IDs; add an error term
+# nrow(.) is the number of rows in the table
+trials <- crossing(subjects, items)  %>%
+  mutate(e_si = rnorm(nrow(.), mean = 0, sd = sigma))
+
+# Show the first few rows
+head(trials)
+```
+
+
+### Part 3: Simulating the Outcome (Reaction Time)
+
+```{r simulating the outcome variable}
+dat_sim <- trials %>%
+  mutate(RT = beta_0 + T_0s + O_0i + (beta_1 + T_1s) * X_i + e_si) %>%
+  select(subj_id, item_id, category, X_i, RT)
+```
+
+
+Below is a geom_violin plot of the simulated data, aka reaction time distributions for both ingroup and outgroup. Additionally, we added dashed lines that represent the means we specified in for the data generation parameters. Overall this is showing that our simulated data managed to produced the same means we wanted (this could have been shown as a table but w/e).
+
+```{r Visualizing the data}
+ggplot(dat_sim, aes(category, RT, color = category)) +
+  # predicted means
+  geom_hline(yintercept = (beta_0 - 0.5*beta_1), color = "orange", linewidth = .75, linetype = "dashed") +
+  geom_hline(yintercept = (beta_0 + 0.5*beta_1), color = "dodgerblue", linewidth = .75, linetype = "dashed") +
+  # actual data
+  geom_violin(alpha = 0, show.legend = FALSE) +
+  stat_summary(fun = mean,geom="crossbar", show.legend = FALSE) +
+  scale_color_manual(values = c("orange", "dodgerblue")) +
+  ggtitle("Predicted versus simulated values") +
+  theme_minimal()
+
+```
+
+### Part 4: Data Simulation Function
+
+The purpose of the function below is to basically simulate data like we did through section 2 and section 3. Now, however, we can either a) modify the parameters easily or b) run the code over and over again and expect different data as a function of **sampling error**.
+
+Note, below we are the **rnorm_multi()** function from the *faux* package, which functions the exact same way as the **mvrnorm()** function.
+
+```{r data simulation function}
+# set up the custom data simulation function
+my_sim_data <- function(
+  n_subj      = 100,   # number of subjects
+  n_ingroup  =  25,   # number of ingroup stimuli
+  n_outgroup =  25,   # number of outgroup stimuli
+  beta_0     = 800,   # grand mean
+  beta_1     =  50,   # effect of category
+  omega_0    =  80,   # by-item random intercept sd
+  tau_0      = 100,   # by-subject random intercept sd
+  tau_1      =  40,   # by-subject random slope sd
+  rho        = 0.2,   # correlation between intercept and slope
+  sigma      = 200) { # residual (standard deviation)
+  
+  # simulate a sample of items
+  items <- data.frame(
+    item_id = seq_len(n_ingroup + n_outgroup),
+    category = rep(c("ingroup", "outgroup"), c(n_ingroup, n_outgroup)),
+    X_i = rep(c(-0.5, 0.5), c(n_ingroup, n_outgroup)),
+    O_0i = rnorm(n = n_ingroup + n_outgroup, mean = 0, sd = omega_0)
+  )
+
+  # simulate a sample of subjects
+  subjects <- faux::rnorm_multi(
+    n = n_subj, mu = 0, sd = c(tau_0, tau_1), r = rho, 
+    varnames = c("T_0s", "T_1s")
+  )
+  subjects$subj_id <- 1:n_subj
+  
+  # cross subject and item IDs 
+  crossing(subjects, items)  %>%
+    mutate(
+      e_si = rnorm(nrow(.), mean = 0, sd = sigma),
+      RT = beta_0 + T_0s + O_0i + (beta_1 + T_1s) * X_i + e_si
+    ) %>%
+    select(subj_id, item_id, category, X_i, RT)
+}
+```
+
+### Part 5: Analyze the Simulated Data
+
+We fit the mixed-effects model, we should understand what this means so not goint to explain it here. We then used the `tidy()` function from the *broom.mixed* package to nicely extract the parameter estimates in a table. Comparing the estimates to the ground truth specified parameters, overall not bad!
+
+Also the p-value corresponding with our category fixed effect was not significant (p = 0.051)
+
+```{r Analyze the simulated data}
+# fit a linear mixed-effects model to data
+mod_sim <- lmer(RT ~ 1 + X_i + (1 | item_id) + (1 + X_i | subj_id),
+                data = dat_sim)
+
+# Get the tidy version of the data
+broom.mixed::tidy(mod_sim) %>%
+  mutate_if(is.numeric, round, 3) %>%
+  mutate(sim = c(beta_0, beta_1, tau_0, rho, tau_1, omega_0, sigma)) %>%
+  select(1:3, 9, 4:8)
+```
+
+
+### Part 6: Calculate Power
+
+Here we have a template on how to calculate power. Essentially there are two main components to the custom function below. The first is that it uses the data generation function **my_sim_data()** that we created above, which then the mixed effects model gets fitted to, and estimates get extracted from it. Note, because of sampling variability (or sampling error), everytime we run this **my_sim_data()** function we will get different numbers. 
+
+The next component is the if statement at the second half of the function. Essentially if the 'filename' argument is specified within the function, then it will create a .csv file that will save iterations of the model extraction process for each simulated dataset and save it.
+
+```{r Calculating power}
+# set up the power function
+single_run <- function(filename = NULL, ...) {
+  # ... is a shortcut that forwards any additional arguments to my_sim_data()
+  dat_sim <- my_sim_data(...)
+  mod_sim <- lmer(RT ~ X_i + (1 | item_id) + (1 + X_i | subj_id),
+                dat_sim)
+  
+  sim_results <- broom.mixed::tidy(mod_sim) %>%
+  mutate_if(is.numeric, round, 3)
+  
+  # append the results to a file if filename is set
+  if (!is.null(filename)) {
+    append <- file.exists(filename) # append if the file exists
+    write_csv(sim_results, filename, append = append)
+  }
+  
+  # return the tidy table
+  sim_results
+}
+
+```
+
+Notice how the functions produce slightly different estimates on both runs, showcasing essentially how the concept of power works. 
+
+```{r produce two single run}
+single_run()
+single_run()
+```
+However, now let's actually run 1000 simulations to showcase how calculating power works. We have already done this and since the file already exists we can easily just read it in.
+
+```{r running 1000 simulations to calculate power, message = F}
+filename <- here("R_power_examples", "output", "sims.csv") # change for new analyses
+if (!file.exists(filename)) {
+  # run simulations and save to a file
+  reps <- 1000
+  sims <- purrr::map_df(1:reps, ~single_run(filename))
+}
+
+# read saved simulation data
+sims <- read_csv(filename)
+```
+
+Now we simply get the proportion of simulations that produced a significant fixed effect parameter from the 1000. We do see that the mean estimates are essentially the same to what we specified, which is pretty cool, but we in general were underpowered as the x_i fixed effect was only significant 54% of the time!
+
+```{r Calculate power for the fixed effect of interest}
+# calculate mean estimates and power for specified alpha
+alpha <- 0.05
+
+sims %>% 
+  filter(effect == "fixed") %>%
+  group_by(term) %>%
+  summarise(
+    mean_estimate = mean(estimate),
+    mean_se = mean(std.error),
+    power = mean(p.value < alpha),
+    n = length(term),
+    .groups = "drop"
+  )
+```
+
+### Part 7: Compare to ANOVA
+
+Below we aggregate the data by giving each participant a mean reaction time from their trials (averageing 25 trials within each stimulus category). We then use the **aov_ez()** function from the **afex** package to run a within-subjects (or repeated measures) ANOVA with category as the within-group factor since each person has two of them.
+
+```{r analyze aggregate data using an ANOVA}
+# aggregate by subject and analyze with ANOVA
+dat_subj <- dat_sim %>%
+  group_by(subj_id, category, X_i) %>%
+  summarise(RT = mean(RT), .groups = "drop")
+
+# Run an ANOVA
+afex::aov_ez(
+  id = "subj_id",
+  dv = "RT",
+  within = "category",
+  data = dat_subj
+)
+
+```
+
+
+Alternatively we can aggregate the data by item, such that we produced a dataset with 50 rows, one for each time, and a corresponding reaction time that indicates the average RT for that stimulus. Then like above run an ANOVA except this time category will be between.  
+
+```{r Running an ANOVA on the aggregate items}
+# aggregate by item and analyze with ANOVA
+dat_item <-  dat_sim %>%
+  group_by(item_id, category, X_i) %>%
+  summarise(RT = mean(RT), .groups = "drop")
+
+afex::aov_ez(
+  id = "item_id",
+  dv = "RT",
+  between = "category",
+  data = dat_item
+)
+
+```
+
+
+```{r creating a custom power function to run an ANOVA}
+# power function for ANOVA
+my_anova_power <- function(filename = NULL, ...) {
+  dat_sim <- my_sim_data(...)
+  
+  dat_subj <- dat_sim %>%
+    group_by(subj_id, category, X_i) %>%
+    summarise(RT = mean(RT), .groups = "drop")
+  
+  dat_item <- dat_sim %>%
+    group_by(item_id, category, X_i) %>%
+    summarise(RT = mean(RT), .groups = "drop")
+
+  a_subj <- afex::aov_ez(
+    id = "subj_id",
+    dv = "RT",
+    within = "category",
+    data = dat_subj
+  )
+  
+  suppressMessages({
+    a_item <- afex::aov_ez(
+      id = "item_id",
+      dv = "RT",
+      between = "category",
+      data = dat_item
+    )
+  })
+  
+  # Format results as a 1-row tibble/data frame
+  sim_results <- tibble(
+    p_subj = a_subj$anova_table$`Pr(>F)`,
+    p_item = a_item$anova_table$`Pr(>F)`
+  )
+  
+  # append the results to a file if filename is set
+  if (!is.null(filename)) {
+    append <- file.exists(filename) # append if the file exists
+    write_csv(sim_results, filename, append = append)
+  }
+  
+  # return the tidy table
+  sim_results
+}
+```
+
+
+```{r run a power analysis for the ANOVA model, message= F}
+filename <- here("R_power_examples", "output", "sims_ANOVA.csv") # change for new analyses
+if (!file.exists(filename)) {
+  # run simulations and save to a file
+  reps <- 1000
+  sims <- purrr::map_df(1:reps, ~my_anova_power(filename))
+}
+
+# read saved simulation data
+anova_sims <- read_csv(filename)
+```
+
+Below we see something very interesting, when we print out the repeated-measures ANOVA that ignores the **item noise**, we see that the beta estimate has a power value of 0.945. On the contrary, when we ignore the subject noise from the between-item ANOVA, we get a power value of 0.531. This is basically showing us that if we had this dataset, and we aggregated reaction times within subjects while fully ignoring the dependencies from stimuli, which seems like a reasonable approach to do for like a novice data analysit, that doing this would essentially **inflate our power** for the fixed effects. 
+
+
+The take home message is that here we need to do double the work to get bad results while for the MLM we only do it once and get accurate results, win win. 
+
+```{r Calculate the power from the ANOVAs}
+alpha <- 0.05
+(power_subj <- mean(anova_sims$p_subj < alpha))
+(power_item <- mean(anova_sims$p_item < alpha))
+
+```

@@ -1,0 +1,6 @@
+"0","# Produce another contingency table"
+"0","tab_xtab(var.row = comb_dat$Age_group, "
+"0","         var.col = comb_dat$Spell_Group_EAP_corrected, "
+"0","         title = ""Good vs Poor Spellers Across Age Groups (Age Corrected) Contingency Table"", "
+"0","         show.row.prc = TRUE)"
+"0",""

@@ -1,0 +1,289 @@
+---
+title: "4) Excluding Participants"
+output: html_document
+date: "2026-06-29"
+---
+
+```{r Universal code block setting}
+knitr::opts_chunk$set(echo = FALSE)
+knitr::opts_chunk$set(message = FALSE)
+knitr::opts_chunk$set(comment = NULL)
+knitr::opts_chunk$set(warning = FALSE)
+
+```
+
+```{r loading in the packages, warning = FALSE, echo = TRUE}
+library(tidyverse)
+library(kableExtra)
+```
+
+
+```{r specifying inputs and outputs}
+# Specify the pathway to where the MegaGrant data is
+raw_data_input <- '~/GitHub/MegaGrant/Analyses/Final Masters Analysis/data'
+  
+# Specify the output to where we want our data to be saved
+clean_data_output <- "~/GitHub/MegaGrant/Analyses/Final Masters Analysis/data"
+```
+
+
+### Part 1: Reading in All Data Needed for First Stage of Participant Exclusion
+
+Here we will be removing subjects that do not have the data for the final analysis and that do not meet the behavior criteria. There is another section that will follow where we further exclude subjects who do not have adequate EEG data.
+
+Data needs (will be dropped if missing):
+
+- Must have age data
+- Must have spelling data
+- Must have CFIT data
+- Must have EEG data
+
+Data preference (having data is ideal but not necessary)
+
+- Medical data is preferred
+- WHOQL data is preferred
+
+
+```{r Reading in the data, warning = FALSE}
+# Set the working directory
+setwd(raw_data_input)
+
+# Read in all data that is needed to for analysis exclusion
+demo <- readRDS("1_demo.rds")
+ARFA <- readRDS("2_ARFA_eap.rds")
+CFIT <- readRDS("3_CFIT_eap.rds")
+EEG_qc <- readRDS("1_EEGqc.rds")
+
+# Read in the dataset that we prefer we have data for
+med <- readRDS("1_Medical.rds")
+whoql <- readRDS("1_WHOQL.rds")
+
+# Combine this information into one dataset - we can use full_join() since all IDs have been corrected for
+# We will not use FFT data since it will mess everything up - plus it's huge (within subject variables)
+comb_dat <- demo %>%
+  full_join(ARFA, by = "ID") %>%
+  full_join(CFIT, by = "ID") %>%
+  full_join(EEG_qc, by = "ID") %>%
+  full_join(med, by = "ID") %>%
+  full_join(whoql, by = "ID")
+
+cat("As we already should know from the first html document\n\n")
+paste0("The combined dataset made up of five datasets has ",length(unique(comb_dat$ID))," unique IDs")
+```
+
+
+### Part 2: Exclusing Participants Based on the Behavioral Criteria
+
+This is the exclusion criteria:
+- Have a CFIT IRT Score less than 1.5 SD 
+- Self-report head trauma
+- Epilepsy
+- Autism
+- ADD
+- Reported 'Very dissatisfied (1)' to sleep quality in the last two weeks
+- Reported 'Always (1)' to experiencing negative feelings in the last two weeks
+- Missing Age data
+- Missing spelling data
+- Having age values larger than 2.5 SD above the mean (0.62%)
+
+
+```{r identify and reject first round of participants based of their behavioral data}
+# Create factor dichotomous factor variables to represent exclusion or not
+comb_dat$G_low <- ifelse(comb_dat$eap_cfit <= - 1.5, "Y", "N") # CFIT (low)
+comb_dat$sleep_prob <- ifelse(comb_dat$sleep == 1, "Y", "N") # Sleep Problems (high)
+comb_dat$anx_prob <- ifelse(comb_dat$neg_feel == 1, "Y", "N") # Anxiety Problems (high)
+comb_dat$MissingSpell <- ifelse(is.na(comb_dat$eap_spell), "Y", "N") # Missing Spelling data
+comb_dat$MissingAge <- ifelse(is.na(comb_dat$Age), "Y", "N") # Missing Age data
+comb_dat$MissingCFIT <- ifelse(is.na(comb_dat$eap_cfit), "Y", "N") # Missing CFIT data
+comb_dat$MissingEEG <- ifelse(is.na(comb_dat$start_globvar), "Y", "N") # Missing EEG data
+comb_dat$Old <-  as.vector(ifelse(scale(comb_dat$Age) > 2.5, "Y", "N")) # Age value larger than 3SD above the mean
+
+
+# Create an exclusion criteria for the behavioral data (Before accounting for noisy EEG data)
+comb_dat <- comb_dat %>%
+  mutate(
+    # Exclusion1 = head injury or developmental disorder
+    Exclusion1_med = case_when(
+      HeadTrauma == "Y" |
+      Health2epilepsy == "Y" |
+      Health2autism == "Y" |
+      ADD == "Y" ~ "Y",
+      TRUE ~ "N"
+    ),
+    
+    # Exclusion2 = Missing between-subject data
+    Exclusion2_miss = case_when(
+      MissingSpell == "Y" |
+      MissingAge == "Y" |
+      MissingCFIT == "Y" |    
+      MissingEEG == "Y" ~ "Y",
+      TRUE ~ "N"
+    ),
+    
+    # Exclusion3 = Reported negative feelings or bad sleep
+    Exclusion3_ql = case_when(
+      sleep_prob == "Y" |
+      anx_prob == "Y" ~ "Y",
+      TRUE ~ "N"
+    ),
+    
+    # Exclusion4 = IQ scores in the bottom 15th percentile
+    Exclusion4_iq = case_when(
+      G_low == "Y" ~ "Y",
+      TRUE ~ "N"
+    ),
+    
+    # Exclusion4 = IQ scores in the bottom 15th percentile
+    Exclusion5_old = case_when(
+      Old == "Y" ~ "Y",
+      TRUE ~ "N"
+    ),
+    
+    # Final Exclusion variable
+    Exclusion = case_when(
+      Exclusion1_med == "Y" | 
+      Exclusion2_miss == "Y" | 
+      Exclusion3_ql == "Y" | 
+      Exclusion4_iq == "Y" |
+      Exclusion5_old == "Y" ~ "Y",
+      TRUE ~ "N"
+    )
+  )
+
+# Remove participants that have missing data
+comb_dat <- filter(comb_dat, Exclusion2_miss == "N")
+
+# Indicate our starting sample size
+cat("After removing participants that were missing data for ARFA, Age CFIT, or EEG, we have",length(unique(comb_dat$ID)),"unique IDs\n")
+
+# Express how many subjects are being removed for injury, epilepsy, or autism
+cat("We are removing",sum(comb_dat$Exclusion1_med == "Y", na.rm = T),"participants for having head trauma, epilepsy, autism or ADD\n")
+
+# Express how many subjects are being removed for having sleep or anxiety problems
+cat("We are removing",sum(comb_dat$Exclusion3_ql == "Y", na.rm = T),"participants for having consistently bad sleep or anxiety problems in the past 2 week\n")
+
+# Express how many subjects are being removed for being old
+cat("We are removing",sum(comb_dat$Exclusion5_old == "Y", na.rm = T),"participants for being too old\n")
+
+# Create a table specifically for excluded subjects to clean and then report numbers
+Excluded <- comb_dat %>% filter(Exclusion == "Y") %>% 
+  select(HeadTrauma:ADD, G_low:anx_prob, Old) 
+Included <- comb_dat %>% filter(Exclusion != "Y") 
+  
+# Clean the table a bit (convert NAs into N)
+Excluded[is.na(Excluded)] <- "N"
+```
+
+```{r Print out the table with the reasons for exclusion}
+# Quickly look at the frequency of responses for this dataset
+sapply(Excluded, function(x) table(x)) %>%
+  data.frame() %>%
+  kbl(caption = "Reasons for Exclusion Among All Excluded IDs in the First Round") %>%
+  kable_paper(full_width = F)
+```
+
+```{r Number of remaning IDs from the first exclusion criteria}
+# Create a dataset that contains only participants that were not excluded
+comb_dat2 <- filter(comb_dat, ID %in% Included$ID)
+
+# Report the number of unique IDs we have left
+cat("This leaves us with data from",length(unique(comb_dat2$ID)),"participants who survived the first round\n")
+```
+
+
+### Part 2: Remove Subjects for Having Poor Quality EEG Data (QC)
+
+
+Below we created the exclusion criteria for EEG recordings that will not be analyzed.
+
+Below we specified what makes a good recording. The recordings need to:
+
+- Have less than 18% of channels be interpolated or marked as bad. Since there are 62 channels in each recording, 62 * .18 = 11.16. Thus, if a recording has 12 or more bad channels they will not be used for analysis.
+- Have at least 30 trials, each being 4 seconds long, which will result in 2 minutes worth of EEG recordings.
+- And if their ending global variance is larger than 4 robust z-scores then they will be removed. This means that we calculate the MAD score instead of the standard deviation, which is more robust to outliers, and multiply this value by 4 and add it to the mean of ending global variance. Any recordings with an ending global variance that exceeds this threshold will be removed.
+
+
+```{r Identifying Good rsEEG Recordings}
+# Create to identify included vs excluded recordings
+apply_exclusion_criteria <- function(df, chan_num, end_trial, chan_rmv_prop) {
+  df$Not_Engh_EEG <- ifelse(df$end_trial < end_trial, "Y", "N")
+  df$Many_Chan_Intp <- ifelse(df$chan_rmv > round(chan_rmv_prop * chan_num), "Y", "N")
+  df$HigEndVar <- ifelse(df$end_globvar > mean(df$end_globvar, na.rm  = T) + 4 * mad(df$end_globvar, na.rm = T), "Y", "N")
+  
+  df %>% mutate(Exclusion = case_when(
+    Not_Engh_EEG == "Y"  | Many_Chan_Intp == "Y"  | HigEndVar == "Y" ~ "Y",
+    TRUE ~ "N"
+  ))
+}
+
+# Set parameters for exclusion criteria
+channels <- 62
+trials_needed <- 30
+chann_int_prop <- .18
+
+# Apply our exclusion criteria to our data
+comb_dat2 <- apply_exclusion_criteria(comb_dat2,
+                                      channels,
+                                      trials_needed,
+                                      chann_int_prop)
+
+# This seems reasonable
+cat("Recordings split by whether they have enough trials (min =",trials_needed,")\n")
+xtabs(~Not_Engh_EEG, comb_dat2)
+cat("\n\nRecordings split by whether they exceed acceptable channel interpolation proportion from ",channels," channels (max =",chann_int_prop,")\n")
+xtabs(~Many_Chan_Intp, comb_dat2)
+cat("\n\nHad an ending global variance that exceeded 4 MAD above the mean\n")
+xtabs(~HigEndVar, comb_dat2)
+cat("\n\nNumber and percentage of recordings that need to be excluded\n")
+xtabs(~Exclusion, comb_dat2)
+round(prop.table(xtabs(~Exclusion, comb_dat2)),2)
+
+# Remove the files that are marked for exclusion
+comb_dat3 <- filter(comb_dat2, Exclusion == "N")
+
+# Check for missing data
+cat("\n\nMissing data of the observations (IDs) that will be used in the final analysis\n")
+sapply(comb_dat3, function(x) sum(is.na(x)))
+
+# Clean up the combined dataset by removing variables we no longer care for
+comb_dat4 <- select(comb_dat3, ID:Age, raw_spell, eap_spell)
+
+# Print the final ID number for the final analysis
+cat("The final ID number for the final analysis will be:", length(unique(comb_dat4$ID)))
+```
+
+### Part 3: Read in the FFT Data and Remove Participants that Were Excluded Above
+
+```{r Read in the FFT data, warning = F}
+# Set the working directory
+setwd(raw_data_input)
+
+# Read in all data that is needed to for analysis exclusion
+FFT_dat <- readRDS("1_FFT.rds")
+
+# Keep only the IDs made the cut
+FFT_dat <- filter(FFT_dat, ID %in% comb_dat4$ID)
+
+# Print the final ID number for the final analysis
+cat("The final ID number for FFT EEG data is:", length(unique(FFT_dat$ID)))
+```
+### Part 4: Final Demographics of the Sample
+
+```{r Quick demographic information}
+cat("Age summary information followed by Age SD")
+summary(comb_dat4$Age)
+sd(comb_dat4$Age)
+cat("Sex Distribution")
+table(comb_dat4$Sex)
+```
+
+#### Part 4: Save the Combined Dataset and the EEG FFT Data With All Included Participants
+
+```{r Saving the Included Participants Data, echo = TRUE, warning = FALSE}
+# Change the working directory
+setwd(clean_data_output)
+
+# Save the ARFA data with the IRT scores
+saveRDS(comb_dat4, "4_comb_dat.rds")
+saveRDS(FFT_dat, "4_FFT.rds")
+```

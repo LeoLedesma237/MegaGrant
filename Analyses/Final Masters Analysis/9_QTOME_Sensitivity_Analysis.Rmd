@@ -1,0 +1,495 @@
+---
+title: "QTPME Sensitivity Analysis"
+output: html_document
+date: "2026-08-25"
+---
+
+```{r load in packages, message=F, warning=F}
+library(tidyverse)
+library(ggplot2)
+library(nlme)
+library(here)
+library(forcats) # fct_inorder()
+library(nlraa) # SSquadp3xs()
+library(furrr) # future_pmap_dfr()
+
+```
+
+```{r set seed}
+set.seed(123)
+```
+
+```{r source custom functions}
+source(here("functions.R"))
+```
+
+Here we are reading in the best fitting delta and extracting its parameters along with the data that was used to fit the model.
+
+Note, random slopes for topographic winthin-subject factors were not specified mainly because they were extremly computationally demanding, thus we are assuming the simpler approach by only specifying subject random intercepts should be sufficient.
+
+```{r read in the delta model}
+# Read in the best fitting delta model
+delta_mod <- readRDS(here("mods", "delta_mod.rds"))$mod2
+
+# Extract the fixed effects from it
+fixe_effs <- fixef(delta_mod)
+
+# Extract the random effects from it
+rand_effs <- as.numeric(VarCorr(delta_mod)[,"StdDev"])
+tau_0 <- rand_effs[1]
+sigma <- rand_effs[2]
+
+# Save the original dataset
+delta_dat <- delta_mod$data
+delta_dat$FB <- as.character(delta_dat$FB )
+```
+
+From the extracted dataset, we are getting some descriptives to inform the data simulation process, so that our simulated data are as close as possible to the observed data.
+
+```{r data descriptives}
+# Get the subject level variables
+delta_dat_agg <- delta_dat %>%
+  select(ID, FB, Spell_group, Sex, Age_min_c, Age, Age_group) %>%
+  mutate(Age_group_c = var_group(Age_min_c, 5)) %>%
+  unique()
+
+# Remind the factor levels
+lapply(delta_dat_agg, levels)
+
+# Some data descriptives
+get_descriptives(delta_dat_agg)
+```
+
+Below we are reminding ourselves what contrasts were coded for each of the factors that were used in the final model. Between-subject factors (spell group and sex) where dummy coded (0, 1), while within subject factors (region and hemisphere) where effect coded (-1, 1)
+
+```{r factor contrasts}
+# Investigate the contrasts per factor for raw data
+contrasts(delta_dat$Spell_group)
+contrasts(delta_dat$Sex)
+contrasts(delta_dat$region)
+contrasts(delta_dat$hemisphere)
+```
+
+### Simulating Spelling and Sex Information
+
+We are using the custom function **simulate_subjects()**. The goal of this function is to return a dataframe that very closely resembles the subject information in our observed delta data.
+
+Noticed the produced data frame has:
+
+1.  Same dimensions as the delta data set
+2.  Same number of participants
+3.  Same number of good and poor spellers
+4.  Same number of females conditional on spelling performance
+5.  Similar age groups within good and poor spellers
+
+Thus, from the code we have two sources of variability, meaning because of these variables each time we run this code we will have slightly different numbers
+
+1.  person specific effect (tau_0)
+2.  age sampling from the observed data
+
+The latter is important because it keeps the similar age distribution between groups, such that we can do a sensitivity analysis based on how our data were collected and then 'discarded'.
+
+```{r simulating subject information}
+# Obtain a dataframe of between subject factors
+subjects <- between_subjects()
+
+# Add age information from the sample
+subjects <- add_age(subjects, "empirical", delta_dat_agg)
+
+# Add subject level effects
+subjects$a_ran <- rnorm(nrow(subjects), 0, tau_0)
+
+# Get descriptives of the information
+get_descriptives(subjects)
+```
+
+Here we use the **expand.grid()** function to generate a dataframe of crossed within subject factors, which are region: `r levels(delta_dat$region)`and hemisphere: `r levels(delta_dat$hemisphere)`. This essentially produces a data frame with their full level combination, producing 10 observations.
+
+We then use the **crossing()** function from the *tidyr* package to fully cross the 10 observations for each person, thus now every person has 10 observations which correspond to unique level combinations of region and hemisphere.
+
+```{r elongate the subjects data frame}
+# Produce a dataframe of the crossed within subject factors
+crossed_top <- expand.grid(region = unique(delta_dat$region), 
+                           hemisphere = unique(delta_dat$hemisphere))
+
+# Print to show the crossed data frame
+crossed_top
+
+# Introduce the within subject factors to the subject data
+subjects_crossed <- crossing(subjects, crossed_top)
+
+# View information about the crossed data frame
+xtabs(~hemisphere + region , subjects_crossed)
+```
+
+### Creating Contrast Coding Predictors (Our Design Matrix)
+
+Here we are introducing the effects of the factors as their own predictors. Essentially, we are creating a **design matrix** comprised of dummy and deviation (effect coded) variables. We are doing this for all four factors that went into our original model. The main reason for this is we are going to use these effects when creating our simulated outcome variable- it makes that process a lot easier.
+
+Addtionally we can also use the design matrix and then plot it for fun.
+
+```{r Setting up the same contrast coding}
+# Run the function
+subjects_crossed_design <- create_design_variables(subjects_crossed)
+```
+
+Here we can visualize the design matrix to get a sense of a) how much data we have for each factor combination and b) how each factor was coded for.
+
+```{r visualize the design matrix}
+# Keep the design matrix for plotting purposes
+design_matrix <- subjects_crossed_design %>%
+  arrange(Spell_group, Sex, ID, hemisphere, region) %>%
+  mutate(intercept = 1) %>%
+  select(intercept, SexM:hem_parietal)
+  
+# View the first few rows
+head(design_matrix)
+
+# Plot the design matrix
+plot_design(design_matrix)
+```
+
+### Specifying the Same Contrast as Original Model
+
+This function is just to make sure that our predictors that we are going to specify within our QTPME model (which is different from above where we are using that information to simulate the EEG outcome), have the some coding contrast as in the original data/model. Failing to do this step will result in models producing different estimates than we would have expected from our simulated data.
+
+```{r Specifying the same contrast of the original model}
+# Set the correct contrasts to the simulated data
+subjects_crossed_design_contrasts <- set_model_contrasts(subjects_crossed_design)
+```
+
+Notice below that the produced contrasts by our factors of interest match that from the original dataset.
+
+```{r confirm the contrasts was done correctly}
+# Investigate the contrasts per factor for the dataframe that will be used to simulate data
+contrasts(subjects_crossed_design_contrasts$Spell_group)
+contrasts(subjects_crossed_design_contrasts$Sex)
+contrasts(subjects_crossed_design_contrasts$region)
+contrasts(subjects_crossed_design_contrasts$hemisphere)
+
+```
+
+### Calculate the Simulated Outcome
+
+Figure out again how QTP models work and why this equation below is doing just that:
+
+mu = ifelse(
+        Age_min_c <= xs_param,
+        a_param + b_param * Age_min_c - (b_param / (2 * xs_param)) * Age_min_c^2,
+        a_param + (b_param * xs_param) / 2
+      ),
+
+```{r Calculate the simulated outcome}
+# Extract the parameter fixed effects 
+beta_a  = fixe_effs[1:12]
+beta_b  = fixe_effs[13:14]
+beta_xs = fixe_effs[15:16]
+
+# Get the simulated outcome
+sim_data <- add_simulated_outcome(
+    df      = subjects_crossed_design_contrasts, 
+    beta_a  = beta_a, 
+    beta_b  = beta_b, 
+    beta_xs = beta_xs, 
+    sigma   = sigma
+  )
+```
+
+
+```{r Viewing the full final design matrix}
+# Viewing design matrix
+#sim_data %>%
+#  mutate(Intercept = 1) %>%
+#  select(ID, Intercept,  SexM:log_absolute_power) %>%
+#  mutate(across(where(is.numeric), ~ round(., 3))) %>%
+#  head(30) %>%
+#  view()
+```
+
+
+### Creating the Full Data Simulation Function
+
+So this right here is the function that will be simulating the data. All the previous sections discussed were helpful functions to get this function here to work properly. So with that we should already have some sense of what is going to take place, which can be broken down into these steps.
+
+1.  Specify the parameters of the data we want to simulate from our original model
+2.  Simulate the subjects dataframe
+3.  Cross the subjects dataframe with the within-subject topographic factors
+4.  Creating our design matrix (introducing dummy and deviation variables)
+5.  Setting the same factor contrasts for when we fit the model
+6.  Simulate 'observed' (or raw) log absolute power EEG data
+
+The inputs for the model are already saved by default, which is nice because all we need to do is run **my_sim_data()** without any arguments and it will work. We could test it but everything has already been tested except for the creation of the simulated data, but that can be tested when we simulate thousands of datasets and see if we can recover the parameters.
+
+Power \~ (Age, a, b, xs)
+
+Observations on individual ppl at specific ages, fit a model that specified that in each of those groups (people) the function with respect to age is a quadratic function that reaches a plateau, the timing of the pltaeatu is due to maturation. The parameters under my control are the intercept, the slope, the quadratic function and the difference between the groups in those parameters. Everything else is derived from the estimations.
+
+You should be estimating the join point not simulating it, you should be simulating the quadratic. The xs point has to be created in a way that is dependent ON the intercept, slope, and quadratic.
+
+```{r data simulation function}
+# Run the data simulation function
+my_sim_data()
+```
+
+
+
+### Fitting a Model to the Simulated Data
+
+```{r fitting a model to the simulated data}
+# Set seed to a seed that works
+set.seed(420)
+
+# Simulate data
+dat_sim <- my_sim_data()
+
+# Fit a QTPME
+fit <- fit_sim_model(dat_sim)$model
+
+# Extract model estimates
+sim_results <- extract_sim_results(fit)
+```
+
+
+
+
+### Creating a Function to Fit a QTPME Model
+
+This function while pretty ugly is just doing the following things:
+
+1.  Simulating the data using the function from above
+2.  Fitting the same QTPME model that was used for the original delta dataset (prevents crashes from model failures)
+3.  Extracting the fixed and random effects from the fitted model
+4.  Allows for the saving of each iteration **in real time**!
+
+```{r Creating a function to fit the quadratic to plateau model}
+ single_run
+```
+
+
+### Parameter Recovery
+
+This may or may not be a power analysis, what we will be doing is running the previous and final function that within it simulates the data, fits a QTPME, and then saves the estimated fixed and random effects. Except we will be doing this \~1,000 times. Since there is a decent change the model will fail to be run, we will increase the reps to a value much larger than 1000.
+
+```{r Run the data simulation 1000 times, message= F}
+# Create the file name for the sensitivity analysis
+filename_recovery <- here("sim", "sims_recovery.csv")
+
+# Set the number of simulations per change in join point value
+nreps <- 1400
+
+# Create the parameter dataframe
+params <- crossing(
+  iteration = 1:nreps
+) %>% 
+  mutate(seed = iteration)
+
+# Simulate the data changing the sample size by 100 every 800 repetition
+if (!file.exists(filename_recovery)) {
+  
+  # Run the single_run() function using the params df as inputs
+  sims_sensitivity <- purrr::pmap_df(
+    params,
+    single_run,
+    filename = filename_recovery
+  )
+}
+
+# Read in the .csv file
+sims_recovery <- read_csv(filename_recovery, show_col_types  = FALSE)
+```
+
+Now that the data were simulated more than a thousand times, and we read in the estimates for each one produced by fitting the QTPME model, we can assess how well the **parameter recovery** went. In other words, while we used our original data skeleton structure as a template (sample size, sample size for each factor and their combinations), we basically programmed an outcome variable as a linear combination of fixed and random effects, where the 'observed' EEG data follows a quadratic to plateau relationship with our age covariate.
+
+Thus, if we fit the same QTPME model to the simulated data, we should get parmeter estimates very close to what we programmed. We should expect some minor deviations but that is an expectation from **sampling noise** or **sampling variability**. Below we showcase the means of each estimate produced by all the models. The takeaway is that for most fixed effects and all random effects, we were able to recover the parameters we specified which is good, ALL EXCEPT THE JOIN POINT, WHICH WAS THE REASON WE EVEN DID THIS TO BEGIN WITH!
+
+The join point mean estimates are fully off and looking at the standard deviation of the estimates, we see extremely large numbers, indicating that some of the models that were fit to the data produce ridiculous estimates.
+
+```{r Calculate power for the fixed effect of interest}
+# Create a vector for the original estimates
+original_estimates <- c(fixe_effs, rand_effs)
+
+# Create a summary table of QTPME parameter estimated from the simulated data
+summarize_simulation(sims_recovery, alpha = 0.05, original_estimates)
+
+# Create a summary table of the variability in the estimates from the simulated data
+summarize_sim_dist(sims_recovery, original_estimates)
+```
+
+
+### Increasing the Sample Size
+
+
+```{r Increasing the sample size to test for power}
+# Create the file name for the sensitivity analysis
+filename_N <- here("sim", "sims_N.csv")
+
+# Set the number of simulations per change in join point value
+nreps <- 1200
+
+# Create the parameter dataframe
+params <- crossing(
+  iteration = 1:nreps,
+  n = seq(1000, 50000, by = 2500)
+)  %>% 
+  mutate(seed = iteration)
+
+# Simulate the data changing the sample size by 100 every 800 repetition
+if (!file.exists(filename_N)) {
+  
+  sims_sensitivity <- purrr::pmap_df(
+    params,
+    single_run,
+    filename = filename_N
+  )
+}
+
+# Read in the data
+sims_N <- read_csv(filename_N, show_col_types  = FALSE)
+```
+
+```{r this is a test}
+# Specify the name of the file and number of iterations per crossing
+filename_N <- here("sim", "sims_N_parallel.csv")
+nreps <- 1200
+
+# Specify the parameters
+params <- crossing(
+  iteration = 1:nreps,
+  n = seq(1000, 50000, by = 2500)
+) %>% 
+  mutate(seed = iteration)
+
+# If the file does not exist- run this code
+if (!file.exists(filename_N)) {
+  
+  # Specify the number of workers to be used
+  plan(multisession, workers = availableCores() - 1)
+  
+  # The future_pmap_dfr() is analogous to pmap_df() except uses parallel processing
+  sims_sensitivity <- future_pmap_dfr(
+    params,
+    single_run,
+    filename = NULL, # Must be set to NULL when parallel processing
+    .options = furrr_options(seed = TRUE)
+  )
+  
+  # Close all workers once the function is donedc 
+  plan(sequential)
+  
+  # Save the combined dataset once all workers complete
+  write_csv(sims_sensitivity, filename_N)
+  
+}
+
+# Read in final output
+sims_N <- read_csv(filename_N, show_col_types = FALSE)
+```
+
+
+```{r Generate a plot to view power change with increasing sample size}
+# Create a summary table of QTPME parameter estimated from the simulated data
+summarize_simulation(sims_N, alpha = 0.05, c(original_estimates,1))
+
+
+# Plot the power change as a function of increasing sample size
+plot_power(sims_N, n, 0.05)
+
+sims_N %>%
+  filter(term == "xs.Spell_grouplow") %>%
+  group_by(n)
+
+```
+
+
+### Increasing the Sample Size Part 2
+
+```{r Increasing the sample size to test for power using a doubling ID approach}
+# Create the file name for the sensitivity analysis
+filename_N2 <- here("sim", "sims_N2.csv")
+
+# Set the number of simulations per change in join point value
+nreps <- 1300
+
+# Create the parameter dataframe
+params <- crossing(
+  iteration = 1:nreps,
+  dup_n = seq(1, 10, by = 1) # Number of data duplications (n = 303)
+)  %>% 
+  mutate(seed = iteration)
+
+# Simulate the data changing the sample size by 100 every 800 repetition
+if (!file.exists(filename_N2)) {
+  
+  sims_sensitivity <- purrr::pmap_df(
+    params,
+    single_run,
+    filename = filename_N2,
+    sim_type = "resample",
+    data  = delta_dat,
+    mod = delta_mod
+  )
+}
+
+# Read in the data
+sims_N2 <- read_csv(filename_N2, show_col_types  = FALSE)
+```
+
+```{r Generate a plot to view power change with duplicating sample size}
+# Plot the power change as a function of duplicating sample size
+plot_power(sims_N2, dup_n, 0.05)
+
+```
+
+
+
+
+
+### Sensitivity Analysis
+
+Now we are going to do a sensitivity analysis, where the goal is to pick one parameter and change it in reasonable incremental steps, to basically get a sense of how power relates to the effect size specified to simulate the data. In other words, since we are interested in knowing how sensitive our data is to capture an effect, we can basically simulate hundreds of datasets where the difference in the join point between groups is small (0, 2, 4), and then simulate datasets where the difference in the join point is large (6, 8, 10). From these datasets, we can identify the proportion of significant p-values for that estimate, and then identify what unstandardized beta is around 80% power, such that betas below this value would have less than 80% power to detect them.
+
+```{r running the sensitivity analysis, message=F}
+# Create the file name for the sensitivity analysis
+filename_sensitivity <- here("sim", "sims_sensitivity.csv")
+
+# Set the number of simulations per changing sample size
+nreps <- 500
+
+# Create the parameter dataframe
+params <- crossing(
+  iteration = 1:nreps,
+  xs2 = seq(0, 10, by = 2)
+)
+
+# Simulate the data changing the join point by 2every 100 iterations
+if (!file.exists(filename_sensitivity)) {
+  
+  sims_sensitivity <- purrr::pmap_df(
+    params,
+    single_run,
+    filename = filename_sensitivity
+  )
+}
+
+# Read in the data
+sims_sensitivity <- read_csv(filename_sensitivity)
+```
+
+```{r examining how changing xs2 influences power}
+# Print out the sensitivity analysis
+sims_sensitivity %>%
+  filter(term == "xs.Spell_grouplow") %>%
+  mutate(significant = p.value < alpha) %>%
+  group_by(xs2) %>%
+  summarise(
+    mean_est = mean(estimate),
+    median_est = median(estimate),
+    sd_est = sd(estimate),
+    power = mean(significant),
+    n = length(xs2))
+  
+
+```
+
+
+

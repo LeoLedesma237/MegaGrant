@@ -1,0 +1,832 @@
+---
+title: "6) EEG Data Reduction and Exploration"
+output: html_document
+date: "2026-06-30"
+---
+
+
+```{r Universal code block setting}
+knitr::opts_chunk$set(echo = FALSE)
+knitr::opts_chunk$set(message = FALSE)
+knitr::opts_chunk$set(comment = NULL)
+knitr::opts_chunk$set(warning = FALSE)
+
+```
+
+```{r loading in the packages, warning = FALSE, echo = TRUE}
+# Load in the package
+library(tidyverse)
+library(ggplot2)
+library(kableExtra)
+library(patchwork)
+library(eegUtils) # electrode_locations(); # topoplot
+```
+
+
+### Problem with eegUtils- it messes with the filter() function
+
+```{r Addressing Problem with multcomp, echo = TRUE}
+library(conflicted)
+conflicts_prefer(dplyr::filter)
+```
+
+```{r specifying inputs and outputs}
+# Specify the pathway to where the MegaGrant data is
+raw_data_input <- '~/GitHub/MegaGrant/Analyses/Final Masters Analysis/data'
+  
+# Specify the output to where we want our data to be saved
+clean_data_output <- "~/GitHub/MegaGrant/Analyses/Final Masters Analysis/data"
+```
+
+
+```{r reading in the combined data and the FFT data, warning = FALSE}
+# Reading in the combined data
+setwd(raw_data_input)
+comb_dat <- readRDS("5_comb_dat.rds")
+FFT_dat <- readRDS("4_FFT.rds")
+
+# Combining the datasets
+comb_FFT <- comb_dat %>%
+  left_join(FFT_dat, by = "ID")
+
+# Change the variable order
+comb_FFT <- select(comb_FFT, ID:Spell_group, Condition, channel, frequency, power)
+```
+
+We are quickly going to include **relative spectral density** or **proportional power spectra**.
+
+This follows the formula:
+
+Power that corresponds to a frequency divided by the power summed across all frequencies - which is calculated within **persons** and within **channels**!
+
+```{r Quickly introduce the relative spectral density, echo = TRUE}
+comb_FFT <- comb_FFT %>%
+  group_by(ID, channel) %>%
+  mutate(rel_power = power / sum(power, na.rm = TRUE)) %>%
+  ungroup()
+
+```
+
+We can also transform these values into **log** and **logit** scale, where the former is done to the power spectra while the latter is done to the relative power spectra. 
+
+```{r Introduce the Log and Logit Scale, echo = TRUE}
+# Introducing log power and logit relative power
+comb_FFT <- comb_FFT %>%
+  mutate(
+    log_power = log(power),
+    logit_rel_power = log(rel_power/(1 - rel_power))
+  )
+```
+
+```{r Quickly view what the datasets look like}
+head(comb_FFT, 10) %>%
+  kbl(caption = "First 10 rows of the Behavioral and EEG Data") %>%
+  kable_paper(full_width = F)
+
+```
+
+
+### Visualizing the Power Spectra (Eyes Closed rsEEG) With the Regular Scale
+
+```{r Averaging Across Factors to Show the Power and Relative Power Spectra}
+# Aesthetics (Leo version)
+theme_clean <- function() {
+  theme_minimal() +
+    theme(legend.position = "bottom",
+          panel.grid.minor = element_blank(),
+          plot.title = element_text(hjust = 0.5,
+                                    size = 10),
+          plot.caption = element_text(hjust = 0.5)
+          ) 
+}
+
+# Create a custom function that allows us to get a summary by multiple inputs for group_by()
+agg_mean <- function(data, ..., value_var = "power") {
+  group_vars <- enquos(...)   # capture the grouping variables
+  data %>%
+    group_by(!!!group_vars) %>%
+    summarise(
+      mean_power = mean(!!sym(value_var), na.rm = TRUE),
+      n = n(),
+      .groups = "drop"
+    )
+}
+
+# Generate the summary tables for the power spectra
+FFT_dat_agg <- agg_mean(comb_FFT, channel, frequency, value_var = "power")
+FFT_dat_agg_age <- agg_mean(comb_FFT, channel, frequency, Age_group, value_var = "power")
+FFT_dat_agg_spell <- agg_mean(comb_FFT, channel, frequency, Spell_group, value_var = "power")
+FFT_dat_agg_age_spell <- agg_mean(comb_FFT, channel, frequency, Age_group, Spell_group, value_var = "power")
+
+# Generate the summary tables for the relative power spectra
+FFT_dat_agg_rel <- agg_mean(comb_FFT, channel, frequency, value_var = "rel_power")
+FFT_dat_agg_age_rel <- agg_mean(comb_FFT, channel, frequency, Age_group, value_var = "rel_power")
+FFT_dat_agg_spell_rel <- agg_mean(comb_FFT, channel, frequency, Spell_group, value_var = "rel_power")
+FFT_dat_agg_age_spell_rel <- agg_mean(comb_FFT, channel, frequency, Age_group, Spell_group, value_var = "rel_power")
+
+```
+
+#### General
+
+
+```{r Produce the aggregate plot, fig.height= 3}
+# Generate the plot for power
+p1a <- FFT_dat_agg %>%
+  ggplot(aes(x = frequency, y = mean_power, group = channel)) +
+  geom_line() +
+  labs(x = "Frequency (Hz)", y = "Power", title = "Avg. Power Spectra\nFor All Channels") +
+  theme_clean()
+
+# Generate the plot for relative power
+p1b <- FFT_dat_agg_rel %>%
+  ggplot(aes(x = frequency, y = mean_power, group = channel)) +
+  geom_line() +
+  labs(x = "Frequency (Hz)", y = "Relative\nPower", title = "Avg. Relative Power Spectra\nFor All Channels") +
+  theme_clean()
+
+# Print both plots
+p1a + p1b
+```
+
+#### By Age Groups
+
+```{r Produce the aggregate age plot, fig.height= 10}
+# Generate the power spectra for age groups
+p2a <- FFT_dat_agg_age %>%
+  ggplot(aes(x = frequency, y = mean_power, group = channel)) +
+  facet_wrap(~Age_group, ncol = 1) +
+  geom_line() +
+  labs(x = "Frequency (Hz)", y = "Power", title = "Avg. Power Spectra For All Channels\nBetween Age Groups") +
+  theme_clean()
+
+# Generate the relative power spectra for age groups
+p2b <- FFT_dat_agg_age_rel %>%
+  ggplot(aes(x = frequency, y = mean_power, group = channel)) +
+  facet_wrap(~Age_group, ncol = 1) +
+  geom_line() +
+  labs(x = "Frequency (Hz)", y = "Relative\nPower", title = "Avg. Relative Power Spectra For All Channels\nBetween Age Groups") +
+  theme_clean()
+
+# Print both plots
+p2a + p2b
+```
+
+
+#### By Spelling Groups
+
+```{r Produce the aggregate spelling plot, fig.height= 5}
+# Generate the power spectra for spelling groups
+p3a <- FFT_dat_agg_spell %>%
+  ggplot(aes(x = frequency, y = mean_power, group = channel)) +
+  facet_wrap(~Spell_group, ncol = 1) +
+  geom_line() +
+  labs(x = "Frequency (Hz)", y = "Power", title = "Avg. Power Spectra For All Channels\nBetween Spell Groups") +
+  theme_clean()
+
+# Generate the relative power spectra for spelling groups
+p3b <- FFT_dat_agg_spell_rel %>%
+  ggplot(aes(x = frequency, y = mean_power, group = channel)) +
+  facet_wrap(~Spell_group, , ncol = 1) +
+  geom_line() +
+  labs(x = "Frequency (Hz)", y = "Relative\nPower", title = "Avg. Relative Power Spectra For All Channels\nBetween Spell Groups") +
+  theme_clean()
+
+# Print both plots
+p3a + p3b
+```
+
+
+### Visualizing the Power Spectra (Eyes Closed rsEEG) With the Log and Logit Scale
+
+
+```{r Averaging Across Factors to Show the Log Power and Logit Relative Power Spectra}
+# Generate the summary tables for the power spectra
+log_FFT_dat_agg <- agg_mean(comb_FFT, channel, frequency, value_var = "log_power")
+log_FFT_dat_agg_age <- agg_mean(comb_FFT, channel, frequency, Age_group, value_var = "log_power")
+log_FFT_dat_agg_spell <- agg_mean(comb_FFT, channel, frequency, Spell_group, value_var = "log_power")
+log_FFT_dat_agg_age_spell <- agg_mean(comb_FFT, channel, frequency, Age_group, Spell_group, value_var = "log_power")
+
+# Generate the summary tables for the relative power spectra
+logit_FFT_dat_agg_rel <- agg_mean(comb_FFT, channel, frequency, value_var = "logit_rel_power")
+logit_FFT_dat_agg_age_rel <- agg_mean(comb_FFT, channel, frequency, Age_group, value_var = "logit_rel_power")
+logit_FFT_dat_agg_spell_rel <- agg_mean(comb_FFT, channel, frequency, Spell_group, value_var = "logit_rel_power")
+logit_FFT_dat_agg_age_spell_rel <- agg_mean(comb_FFT, channel, frequency, Age_group, Spell_group, value_var = "logit_rel_power")
+
+```
+
+
+#### General
+
+
+```{r Produce the aggregate log and logit plot, fig.height= 3}
+# Generate the plot for power
+log_p1a <- log_FFT_dat_agg %>%
+  ggplot(aes(x = frequency, y = mean_power, group = channel)) +
+  geom_line() +
+  labs(x = "Frequency (Hz)", y = "log(Power)", title = "Avg. Power Spectra\nFor All Channels") +
+  theme_clean()
+
+# Generate the plot for relative power
+logit_p1b <- logit_FFT_dat_agg_rel %>%
+  ggplot(aes(x = frequency, y = mean_power, group = channel)) +
+  geom_line() +
+  labs(x = "Frequency (Hz)", y = "logit(Relative\nPower)", title = "Avg. Relative Power Spectra\nFor All Channels") +
+  theme_clean()
+
+# Print both plots
+log_p1a + logit_p1b
+```
+
+#### By Age Groups
+
+```{r Produce the aggregate log and logit age plot, fig.height= 10}
+# Generate the power spectra for age groups
+log_p2a <- log_FFT_dat_agg_age %>%
+  ggplot(aes(x = frequency, y = mean_power, group = channel)) +
+  facet_wrap(~Age_group, ncol = 1) +
+  geom_line() +
+  labs(x = "Frequency (Hz)", y = "log(Power)", title = "Avg. Power Spectra For All Channels\nBetween Age Groups") +
+  theme_clean()
+
+# Generate the relative power spectra for age groups
+logit_p2b <- logit_FFT_dat_agg_age_rel %>%
+  ggplot(aes(x = frequency, y = mean_power, group = channel)) +
+  facet_wrap(~Age_group, ncol = 1) +
+  geom_line() +
+  labs(x = "Frequency (Hz)", y = "logit(Relative\nPower)", title = "Avg. Relative Power Spectra For All Channels\nBetween Age Groups") +
+  theme_clean()
+
+# Print both plots
+log_p2a + logit_p2b
+```
+
+#### By Spelling Groups
+
+```{r Produce the aggregate log and logit spelling plot, fig.height= 5}
+# Generate the power spectra for spelling groups
+log_p3a <- log_FFT_dat_agg_spell %>%
+  ggplot(aes(x = frequency, y = mean_power, group = channel)) +
+  facet_wrap(~Spell_group, ncol = 1) +
+  geom_line() +
+  labs(x = "Frequency (Hz)", y = "log(Power)", title = "Avg. Power Spectra For All Channels\nBetween Spell Groups") +
+  theme_clean()
+
+# Generate the relative power spectra for spelling groups
+logit_p3b <- logit_FFT_dat_agg_spell_rel %>%
+  ggplot(aes(x = frequency, y = mean_power, group = channel)) +
+  facet_wrap(~Spell_group, , ncol = 1) +
+  geom_line() +
+  labs(x = "Frequency (Hz)", y = "logit(Relative\nPower)", title = "Avg. Relative Power Spectra For All Channels\nBetween Spell Groups") +
+  theme_clean()
+
+# Print both plots
+log_p3a + logit_p3b
+```
+
+# Examining Alpha Rhythm Peak (Absolute Power Raw Scale)
+
+Since we have eyes-closed rsEEG, it would be interesting to investigate the alpha rhythm peak across subjects from an aggregate of the posterior electrodes. This will be done for the raw scale.
+
+This is typically between 8-12 Hz. To be more conservative, we will pick between 7-13 Hz.
+
+```{r examining alpha rhytm peak frequecy}
+# Create a custom function to identify the APF
+find_APF <- function(x) {
+  data.frame(
+    APF = x$frequency[x$power == max(x$power)],
+    Age_group = unique(x$Age_group),
+    Spell_group = unique(x$Spell_group))
+}
+
+# Filter the data to be between 7 and 13 Hz for Occipital channels
+APF <- comb_FFT %>% 
+  filter(
+    frequency >= 7 & frequency <= 13,
+    channel %in% c(
+      "O1", "O2", "Oz",
+      "PO3", "PO4", "POz",
+      "P3", "P4", "Pz"
+    )
+  )
+
+# Average activity across channels
+APF_agg <- APF %>%
+  group_by(ID, frequency) %>%
+  summarise(
+    Age_group = Age_group[1],
+    Spell_group = Spell_group[1],
+    power = mean(power),
+    .groups = "drop")
+
+# Turn the data into a list
+APF_agg_list <- split(APF_agg, APF_agg$ID)
+
+# Identify the APF for every person while returning between subject data
+APF_dat <- lapply(APF_agg_list, find_APF) %>% do.call(rbind, .)
+
+# Show the distribution of APF data
+APF_dat %>%
+  ggplot(aes(x = APF)) +
+  geom_histogram(color = "black", fill = "white") +
+  labs(title = "Distribution of Avg APF in the Occipital Electrodes") +
+  theme_clean()
+
+# Generate APF plots for Age Groups
+APF_dat %>%
+  ggplot(aes(x = Age_group, y = APF)) +
+  geom_boxplot( ) +
+  labs(title = "Avg Occipital APF Seems Consistent Across Age") +
+  theme_clean()
+
+# Generate APF plots for Spelling Groups
+APF_dat %>%
+  ggplot(aes(x = Spell_group, y = APF)) +
+  geom_boxplot( ) +
+  labs(title = "Avg Occipital APF Seems Slightly Higher in Low Spell Group",
+       caption = "This is the opposite of what we would expect lmao") +
+  theme_clean()
+  
+  
+```
+
+
+# Introducing region and Frequency Band Variables (No Averaging)
+
+Here we will introduce **frequency band** (FB), **region**, **hemisphere**, and **region_hemisphere** as factors. These factors are designed to simplify our data, since right now each recording has power values across a broad range of frequencies for each of the 62 electrodes. Eventually we will use these factors to reduce the dimensions of the data, but for now we used the `summary()` function in combination with the `group_by()` function to keep the same dimension. This is so that in subsequent sections we can plot the power spectra without issues.  
+
+Also, all recordings below are **eyes closed** only!
+  
+  The frequency bands chosen were based on an extensive review of frequency bands looked at across several papers (check the rsEEG power changes with development excel sheet).
+
+- Delta waves: 0.5 - 4 Hz
+- Theta waves: 4 - 7.5 Hz
+- Alpha1 (slow) waves: 8 - 10 Hz
+- Alpha2 (fast) waves: 10 - 12.5 Hz
+- Beta1 waves: 12.5 - 18 Hz
+- Beta2 waves: 18 - 34.5 Hz
+
+Why use these different frequency bands? What do they represent in terms of informing us about the brain?
+  
+  Delta: 
+  
+  Delta is the clearest developmental marker in your table. Neurophysiologically, high delta power reflects large-amplitude, highly synchronous slow activity across neuronal populations. In development, elevated delta is interpreted as a marker of neural immaturity, greater synaptic density, and less refined cortical organization. Whitford et al. specifically frame slow-wave power as arising from spatially coherent synaptic activity, especially local synchrony among pyramidal neurons; as synaptic pruning reduces redundant dendrites, spines, and axon terminals, scalp EEG amplitude decreases. This makes delta especially sensitive to adolescent cortical maturation. See rows 8 and 9, and also rows 3, 4, and 6.
+Expected change: delta absolute power should decrease from adolescence into adulthood, with the largest and most robust declines compared with faster bands. This decrease should be nonlinear/decelerating, with stronger change during adolescence and a plateau/asymptote by the mid-20s. This is especially supported by rows 8 and 9. Topographically, the developmental decrease is often widespread, but several rows suggest posterior regions mature earlier and frontal/association cortices show later maturation. See rows 2, 3, 4, 8, and 9.
+
+Theta:
+  
+  Theta also reflects slow-wave developmental immaturity, but it is often discussed as slightly more cognitively/network-related than delta. In your rows, theta is tied to maturation of thalamo-cortical and cortico-cortical systems, reduction of slow-wave dominance, and the shift toward faster dominant frequencies. Cragg et al. describe delta/theta decreases as part of standard adolescent maturation and connect them to synaptic pruning and white matter development. See rows 4, 6, 8, and 9.
+Expected change: theta absolute power should decrease from adolescence into adulthood, often strongly and sometimes even more steeply than delta depending on the study. Gasser et al. note that theta showed one of the strongest developmental decreases and that theta is gradually superseded by alpha activity during development. See row 2. Cragg et al. also report that delta and theta show the largest developmental decreases, with reductions across the scalp. See row 4.
+
+Alpha 1 (Slow):
+  
+  Alpha1 is lower alpha, and developmentally it often behaves more like the slow bands than like mature adult alpha. In your table, alpha1 is described as decreasing with age or being reduced as the brain shifts from slower alpha toward faster alpha. Gasser et al. describe alpha1 as part of a maturational sequence where alpha1 supersedes theta, and alpha2 later supersedes alpha1. See row 2. Cragg et al. report that alpha1 absolute power decreases over time. See row 4. Lüchinger et al. also report adolescent-adult differences below 10 Hz, which maps well onto alpha1. See row 8.
+Expected change: alpha1 should generally decrease from adolescence into adulthood, especially if measured as absolute power. Conceptually, this reflects movement away from slower, less mature dominant rhythms and toward faster alpha organization. It is also part of the broader developmental “frequency shift” from slower to faster rhythms. See rows 2, 4, 6, and 8.
+
+Alpha2 (Fast):
+  
+  Alpha2 is the more mature upper-alpha range. It is closely connected to the adult posterior alpha rhythm and peak alpha frequency. Neurophysiologically, alpha is often linked to thalamo-cortical information exchange, cortical idling/inhibition, and coordinated rhythmic activity in posterior networks. In your sheet, alpha2 is also tied to white matter maturation and increased conduction velocity, because faster neural communication supports faster rhythmic oscillations. See rows 4 and 6.
+Expected change: alpha2 is not expected to simply decrease like delta/theta. It may increase in relative power during development, especially posteriorly, even when absolute power is stable or eventually decreases. Gasser et al. describe alpha2 as increasing until around age 13 and then decreasing, producing an inverted-U pattern. See row 2. Cragg et al. report that alpha2 was the only range that did not show an age-related absolute power decrease, while relative alpha2 increased posteriorly. See row 4. For adolescents into adulthood, I would expect alpha2 to be relatively stable or show weaker decreases than slow bands, while peak alpha frequency shifts upward and posterior alpha organization becomes more adult-like. See rows 4, 6, and 8.
+
+Beta1 (WONT USE):
+  
+  Beta1 reflects faster, lower-amplitude cortical activity and more mature cortical network dynamics. Compared with delta/theta, its developmental interpretation is less straightforward. Some rows describe beta as part of the broader shift toward faster rhythms with maturation, especially in relative power, while absolute beta may decrease slowly or show weaker age effects. See rows 2, 4, 6, and 8.
+Expected change: beta1 absolute power may decrease slightly with age, but the effect is usually weaker and less robust than delta/theta. In relative terms, beta may increase because slow-wave power decreases more strongly. Gasser et al. found beta1/beta2 absolute power slowly declined, while fast bands increased in relative magnitude. See row 2. Cragg et al. found beta absolute power decreased with age, but relative beta increased. See row 4. Lüchinger et al. found higher beta frequencies did not clearly distinguish adolescents from adults. See row 8. So for your project, beta1 should be treated as a secondary/more exploratory maturational marker.
+
+Beta2 (WONT USE)
+
+Beta2 reflects higher-frequency, lower-amplitude activity, but it is also more vulnerable to contamination from muscle activity than lower bands. Your sheet notes caution about higher beta/gamma ranges and muscle artifacts, especially above 20–30 Hz. See row 4, and row 2 notes avoiding very high beta/gamma contamination.
+Expected change: beta2 is the least clear developmental band among the six. Some studies report slow decreases in absolute beta with age, some report increases in relative fast-frequency power, and others find weak adolescent-adult differences. Soroko et al. even found beta2 increases in some groups/regions but decreases in others, suggesting strong topographic and subgroup specificity. See row 6. Lüchinger et al. found beta1/beta2 did not substantially distinguish adolescents from adults. See row 8. I would include beta2, but interpret it cautiously and emphasize that developmental effects are expected to be weaker and less consistent than delta/theta.
+
+
+For region, we will use channel information from 56 channels to create essentially 8 regions, that capture brain activity in the frontal, central, temporal, parietal and occipital regions for both hemispheres (we will ignore midline since we have no theoretical implications for it).
+
+- Left Frontal: c("Fp1","AF3","AF7","F1","F3","F5","F7","FC1","FC3","FC5")
+- Right Frontal: c("Fp2","AF4","AF8","F2","F4","F6","F8","FC2","FC4","FC6")
+- Left Central: c("C1","C3","C5","CP1","CP3","CP5") 
+- Right Central: c("C2","C4","C6","CP2","CP4","CP6")
+- Left Temporal: c("FT7","T7","TP7","FT9")
+- Right Temporal: c("FT8","T8","TP8","FT10")
+- Left Parietal: c("P1","P3","P5","P7") 
+- Right Parietal: c("P2","P4","P6","P8")
+- Left Occipital: ("PO3","PO7","O1")
+- Right Occipital: c("PO4","PO8","O2")
+
+
+```{r Look at the power spectra of included recordings, echo = TRUE}
+# Creating frequency bands variable
+comb_FFT2 <- comb_FFT %>%
+  mutate(
+    FB = case_when(
+      frequency >= 0.5 & frequency <= 4 ~ "delta",
+      frequency >= 4 & frequency <= 8 ~ "theta",
+      frequency >= 8 & frequency <= 10 ~ "alpha1",
+      frequency >= 10 & frequency <= 12.5 ~ "alpha2",
+      #frequency >= 12.5 & frequency <= 18 ~ "beta1",
+      #frequency >= 18 & frequency <= 34.5 ~ "beta2",
+      TRUE ~ "ERROR"
+    ),
+    FB = factor(FB, levels = c("delta", "theta", "alpha1", "alpha2"))
+  )
+
+# Creating a region_hemisphere variable (These are NON LONGER from Whitford's paper 2007)
+# Creating a region_hemisphere variable (updated 8-cluster solution)
+comb_FFT2 <- comb_FFT2 %>%
+  mutate(
+    region_hemisphere = case_when(
+      # Frontal
+      channel %in% c("Fp1","AF3","AF7","F1","F3","F5","F7","FC1","FC3","FC5") ~ "left_frontal", 
+      channel %in% c("Fp2","AF4","AF8","F2","F4","F6","F8","FC2","FC4","FC6") ~ "right_frontal",
+      # Central
+      channel %in% c("C1","C3","C5","CP1","CP3","CP5") ~ "left_central",
+      channel %in% c("C2","C4","C6","CP2","CP4","CP6") ~ "right_central",
+      # Temporal
+      channel %in% c("FT7","T7","TP7","FT9") ~ "left_temporal",
+      channel %in% c("FT8","T8","TP8","FT10") ~ "right_temporal",
+      # Parietal
+      channel %in% c("P1","P3","P5","P7") ~ "left_parietal",
+      channel %in% c("P2","P4","P6","P8") ~ "right_parietal",
+      # Occipital
+      channel %in% c("PO3","PO7","O1") ~ "left_occipital",
+      channel %in% c("PO4","PO8","O2") ~ "right_occipital",
+      
+      # Handles NAs
+      TRUE ~ NA_character_
+    )
+  )
+
+# Creating a region and hemisphere variable separately
+comb_FFT2 <- comb_FFT2 %>%
+  mutate(
+    region = case_when(
+      grepl("frontal", region_hemisphere) ~ "frontal",
+      grepl("temporal", region_hemisphere) ~ "temporal",
+      grepl("central", region_hemisphere) ~ "central",
+      grepl("parietal", region_hemisphere) ~ "parietal",
+      grepl("occipital", region_hemisphere) ~ "occipital"),
+    hemisphere = case_when(
+      grepl("left", region_hemisphere) ~ "left",
+      grepl("right", region_hemisphere) ~ "right"),
+    region = factor(region),
+    hemisphere = factor(hemisphere)
+  )
+
+# Remove variables we no longer care for
+comb_FFT3 <- select(comb_FFT2, - Condition, - log_power, - logit_rel_power)
+```
+
+Below we can see the unique levels to each of the factors that were introduced.
+
+Notice each newly introduced factor has NA's as a level. This is because we are using part of the EEG data- not the full thing. For example, we are not using frequency band values less than one nor the ones that correspond with the beta band. We are not using all electrodes to generate the regions and same with hemisphere, we will not include the midline ones. Thus, in the next section when we drop the NA observations our dataset will shrink due to it, which is a good thing. 
+
+
+```{r Familiarizing Ourselves with the Factors in the Data}
+# Create a list of factors in the data so far
+factor_list <- list(
+  Age_group = comb_FFT2$Age_group,
+  Spell_group = comb_FFT2$Spell_group,
+  Condition = comb_FFT2$Condition,
+  frequency = comb_FFT2$frequency,
+  FB = comb_FFT2$FB,
+  region = comb_FFT2$region,
+  hemisphere = comb_FFT2$hemisphere,
+  region_hemisphere = comb_FFT2$region_hemisphere
+) 
+
+# Print out the unique levels for each factor in our data
+lapply(factor_list, function(x) {
+  unique(x)
+})
+```
+
+
+# Calculating Absolute Power (Data Reduction)
+
+In this section we will calculate **absolute power**. We used Grok's help to basically accomplish this. Okay so we established that each subject has 8,618 observations (62 * 139 = 8,618). We do not care for information from 62 channels, we are only interested in information from 23 of them, so we will start by filtering out channels we do not care for. The easiest way to do this is just to drop observations where region has NA's, because these are channels that were not labeled for any of the 4 region groups. 
+
+What we have now per person is 3,197 observations (23 * 139 = 3,197). What we need to do now is simplify our data, or reduce the number of observations by averaging across channels within our frequency bands of interest. This will result in a PSD for 4 topographies for each person (4 * 139 = 556 observations).
+
+Absolute power is defined as the **sum of power values** within frequency bands. So the next step will be to sum power values within topographical regions. We have three frequency bands of interest (slow, alpha, beta), so the 556 observations will be isolated into 4 mutually exclusive groups (region), from those groups which represent PSD, we will create sub groups of PSD within frequency bands (4 * 3 = 12 region x frequency band groups), and from these groups we will take the chunked PSD values and sum them together for each person! Additionally, we will multiply this sum by the frequency resolution, which is 0.25. This apparently makes the values actual absolute power, but regardless when we analyze the data we will still get the same results had we not done this. 
+
+Therefore, each subject will now have 3 * 4 = 12 power values. With this information, we can also group by either frequency bands or frequency band * region level combinations and calculate z-scores. In the plots below we can see the consequence of calculating z-scores failing to account for region, the data becomes very skewed. However when including region it looks a lot more reasonable, but still skewed. Since we are going to use models that require a normally distributed outcome, we must have to do some transformation to our data.
+
+So in plots below, we also take the log of the outcome and then conver these values into z-scores. From the plots we see that in the log scale values are no longer that extreme, aka not that far away from the mean, which means that our analysis will probably work on our outcome (absolute power) in this scale. 
+
+
+We previously dropped the transformed scales (they are **non-linear**) since they will be different when recalculated from the remaining frequencies/averages. Basically, the math needs to be done in the raw scale first and then transformed, we can't do the math in the transformed scale (e.g., averaging or summing values).
+
+```{r Calculating absolute power for each frequency band}
+# Filter out channels we do not care for
+chan_filt <- comb_FFT3 %>%
+  drop_na(FB, region)
+
+# Average across channels within region AND hemisphere regions
+avg_across_chan_by_top <- chan_filt %>%
+  group_by(ID, frequency, region_hemisphere, Sex, Age, Spell_group) %>%
+  summarise(FB = first(FB),
+            Age_group = first(Age_group),
+            power = mean(power),
+            rel_power = mean(rel_power),
+            n_channels = n(),
+            .groups = "drop") %>%
+  arrange(ID, frequency)
+
+```
+
+```{r View the dataset we generated above before we sum within frequency bands}
+head(avg_across_chan_by_top, 20) %>%
+  kbl(caption = "All Power Features Averaged Across Channels Within Region and Hemisphere levels") %>%
+  kable_paper(full_width = F)
+
+```
+
+
+```{r Summing Within Frequency Bands to Reduce the Data Size Plus Calculating Log and Logit Scales}
+# Calculating absolute, relative, log absolute, and logit relative power
+final_dat <- avg_across_chan_by_top %>%
+  group_by(ID, region_hemisphere, FB, Sex, Age, Spell_group) %>%
+  summarise(
+    Age_group = first(Age_group),
+    absolute_power = sum(power) * 0.25,
+    relative_power = sum(rel_power) * 0.25) %>%
+  mutate(
+    log_absolute_power = log(absolute_power),
+    logit_relative_power = qlogis(relative_power)) %>%
+  ungroup()
+
+
+# Creating a region and hemisphere variable separately
+final_dat <- final_dat %>%
+  mutate(
+    region = case_when(
+      grepl("frontal", region_hemisphere) ~ "frontal",
+      grepl("central", region_hemisphere) ~ "central",
+      grepl("temporal", region_hemisphere) ~ "temporal",
+      grepl("parietal", region_hemisphere) ~ "parietal",
+      grepl("occipital", region_hemisphere) ~ "occipital"),
+    hemisphere = case_when(
+      grepl("left", region_hemisphere) ~ "left",
+      grepl("right", region_hemisphere) ~ "right"),
+    region = factor(region),
+    hemisphere = factor(hemisphere)
+  )
+
+# Data points per person
+addmargins(xtabs(~region_hemisphere + FB, filter(final_dat, ID == "10053"))) %>%
+  kbl(caption = "Datapoints per person based on region, its hemisphere, and frequency bands") %>%
+  kable_paper(full_width = F)
+```
+
+This is the table that will be used for the final analysis.
+
+```{r Visualizing the Final Dataset}
+# Visualizing the Final Dataset for Analysis
+head(final_dat,20) %>%
+  kbl(caption = "Final dataset ready for analysis") %>%
+  kable_paper(full_width = F)
+
+
+```
+
+```{r Saving the Final Dataset, echo = TRUE, warning = FALSE}
+# Change the working directory
+setwd(clean_data_output)
+
+# Save the ARFA data with the IRT scores
+saveRDS(final_dat, "6_final.rds")
+```
+
+
+# Visualizing the Data As Power Representing Frequency Bands and Topographical Regions (Z - transformed)
+
+
+```{r Create custom functions for plotting}
+plot_power <- function(data, ..., value_var = "power") {
+  group_vars <- enquos(...)   # capture the grouping variables
+  data %>%
+    group_by(!!!group_vars) %>%
+    mutate(power_z = scale(!!sym(value_var))) %>%
+    ggplot(aes(x = FB, y = power_z)) +
+    geom_boxplot() +
+    theme_clean()
+}
+
+plot_power2 <- function(data, ..., value_var = "power") {
+  group_vars <- enquos(...)   # capture the grouping variables
+  data %>%
+    group_by(!!!group_vars) %>%
+    mutate(power_z = scale(!!sym(value_var))) %>%
+    ggplot(aes(x = FB, y = power_z)) +
+    facet_wrap(~hemisphere + region , scales = "free", nrow = 2) +
+    geom_boxplot() +
+    theme_clean()
+}
+```
+
+```{r Part 1 plotting absolute power in raw scale for frequency band and topography}
+# Plot the graphs
+plot_power(final_dat, FB, value_var = "absolute_power") + 
+  labs(title ="Absolute Power (z) by Frequency Band")
+plot_power2(final_dat, FB, region_hemisphere, value_var = "absolute_power") +
+  labs(title = "Absolute Power (z) by Frequency Band And\nRegion Hemisphere")
+```
+
+```{r Part 2 plotting absolute power in log scale for frequency band and topography}
+# Plot the graphs
+plot_power(final_dat, FB, value_var = "log_absolute_power") + 
+  labs(title ="Log Absolute Power (z) by Frequency Band")
+plot_power2(final_dat, FB, region_hemisphere, value_var = "log_absolute_power") +
+  labs(title = "Log Absolute Power (z) by Frequency Band And\nRegion Hemisphere")
+```
+```{r Part 3 plotting relative power in raw scale for frequency band and topography}
+# Plot the graphs
+plot_power(final_dat, FB, value_var = "relative_power") + 
+  labs(title ="Relative Power (z) by Frequency Band")
+plot_power2(final_dat, FB, region_hemisphere, value_var = "relative_power") +
+  labs(title = "Relative Power (z) by Frequency Band And\nRegion Hemisphere")
+```
+
+```{r Part 4 plotting logit relative power in raw scale for frequency band and topography}
+# Plot the graphs
+plot_power(final_dat, FB, value_var = "logit_relative_power") + 
+  labs(title ="Logit Relative Power (z) by Frequency Band")
+plot_power2(final_dat, FB, region_hemisphere, value_var = "logit_relative_power") +
+  labs(title = "Logit Relative Power (z) by Frequency Band And\nRegion Hemisphere")
+```
+
+
+# Visualizing Potential Group Differences in The Log and Logit Scale for Spelling
+
+There seem to be no group differences in either the log or logit scale
+
+```{r Viewing Spelling Group Differences Between the Log and Logit Scale, fig.height= 6}
+final_dat %>%
+  ggplot(aes(x= FB, y = log_absolute_power, fill = Spell_group)) +
+  facet_wrap(~hemisphere + region, nrow = 2) +
+  geom_boxplot() +
+  labs(x = "Frequency Bands", y = "Log(Absolute Power)") + 
+  theme_clean()
+
+final_dat %>%
+  ggplot(aes(x= FB, y = logit_relative_power, fill = Spell_group)) +
+  facet_wrap(~hemisphere + region, nrow = 2) +
+  geom_boxplot() +
+  labs(x = "Frequency Bands", y = "Logit(Relative Power)") + 
+  theme_clean()
+
+```
+
+# Visualizing the Relationship Between Log and Logit Scale Power and Age
+
+- We can see that with age log absolute power decreases as we would expect. 
+
+```{r Visualizing the relationship between log absolute power and age, fig.height= 10}
+final_dat %>%
+  ggplot(aes(x = Age, y = log_absolute_power, color = Spell_group)) +
+  facet_wrap(~FB + region, scales = "free") +
+  geom_point(size = .2, alpha = .7) +
+  geom_smooth(se = F) +
+  labs(x = "Age (Years)", y = "Log(Absolute Power)", title = "Log(Absolute Power) with Age by Frequency Band and Region\n(Ignoring Hemisphere)") + 
+  theme_clean()
+
+```
+
+- With logit absolute power- it is completely flatlined.
+**Takeaway**: We will **not analyze** logit(relative power) as it does not even seem to change with age!
+
+
+
+```{r Visualizing the relationship between logit relative power and age, fig.height= 10}
+final_dat %>%
+  ggplot(aes(x = Age, y = logit_relative_power, color = Spell_group)) +
+  facet_wrap(~FB + region, scales = "free") +
+  geom_point(size = .2, alpha = .7) +
+  geom_smooth(se = F) +
+  labs(x = "Age (Years)", y = "Logit(Relative Power)", title = "Logit(Relative Power) with Age by Frequency Band and Region\n(Ignoring Hemisphere)") + 
+  theme_clean()
+
+```
+
+# Visualizing the Logit Absolute Power Data Through Topographic Heat Maps 
+
+Essentially we will be taking a previous preprocessed dataset (not the most recent since we removed channel information from it), and use that to aggregate 
+
+Below are essentially the log absolute power for three frequency bands: delta, theta, alpha1. This was created by averaging activity across the whole dataset, so it encompases the full age range and both good and poor spellers.
+
+```{r Visualizing topographic maps, fig.height= 5, fig.width= 9}
+
+# Create a function to plot main topographic frequency band plots
+topo_plot_fun1 <- function(data, FB, power) {
+  # Filter the data by freq band then average across electrodes
+  FB_data <- data %>%
+    filter(FB == {{FB}}) %>%
+    group_by(channel) %>%
+    summarise(log_power = log(mean(!!sym(power), na.rm = TRUE)),
+              .groups = "drop") %>%
+    rename(electrode = channel)
+  
+  # Introduce electrode location
+  plot_FB_data <- electrode_locations(FB_data)
+  
+  # Plot the data
+  topoplot(plot_FB_data, quantity = "log_power") + labs(title = paste0(FB)) 
+ }
+
+# Generate the plots for each topographical region
+top1 <- topo_plot_fun1(comb_FFT3, "delta", "power") + labs(title = "Log Absolute Power\n(Delta)")
+top2 <- topo_plot_fun1(comb_FFT3, "theta", "power") + labs(title = "Log Absolute Power\n(Theta)")
+top3 <- topo_plot_fun1(comb_FFT3, "alpha1", "power") + labs(title = "Log Absolute Power\n(Alpha1)")
+
+# Present all frequencies together
+top1 + top2 + top3
+```
+### Visualizing the Topographic Heat Maps by Age and Spelling Group
+
+```{r test}
+# Create a table where power is disaggreagted by: channels, age_group, spell_group, and frequency band
+age_spell_FB_dat <- comb_FFT3 %>%
+  group_by(channel, Age_group, Spell_group, FB) %>%
+  summarise(log_power = log(mean(power, na.rm = TRUE)),
+              .groups = "drop") %>%
+  rename(electrode = channel) %>%
+  drop_na(FB)
+
+# Add electrode locations
+age_spell_FB_dat <- electrode_locations(age_spell_FB_dat)
+
+# Filter the data by frequency band of interest
+delta_dat <- filter(age_spell_FB_dat, FB %in% "delta")
+theta_dat <- filter(age_spell_FB_dat, FB %in% "theta")
+alpha1_dat <- filter(age_spell_FB_dat, FB %in% "alpha1")
+```
+
+```{r Create a custom function to plote heat maps by age group}
+# Create a custom function to generate the topographic plots
+plot_age_topo <- function(data) {
+  # Obtain the min and max values
+  global_min <- min(sapply(data, function(x) min(x$log_power, na.rm = TRUE)))
+  global_max <- max(sapply(data, function(x) max(x$log_power, na.rm = TRUE)))
+  
+  
+  # Generate all plots and store them in a list
+  plot_list <- lapply(names(data), function(nm) {
+    topoplot(
+      data[[nm]],
+      quantity = "log_power"
+    ) +
+      scale_colour_continuous(
+        limits = c(global_min, global_max),
+        type = "viridis"
+      ) +
+      ggtitle(nm) +
+      theme(plot.title = element_text(hjust = 0.5))  # Center titles
+  })
+  
+  # Combine all plots side by side using patchwork
+  wrap_plots(plot_list, ncol = 3) 
+}
+```
+
+```{r Plot heat topographic map of delta by age and spelling group, fig.height= 4, fig.width= 8}
+# Create a custom function to split the data
+split_dat <- function(x) {split(x, list(x$Age_group, x$Spell_group))}
+
+# Split the data
+delta_list <- split_dat(delta_dat)
+
+# Save the data as good or poor spellers
+delta_good <- delta_list[1:5]
+delta_poor <- delta_list[6:10]
+
+# Plot the heat maps for both spelling groups
+plot_age_topo(delta_good)
+plot_age_topo(delta_poor)
+```
+
+```{r Plot heat topographic map of theta by age and spelling group, fig.height= 4, fig.width= 8}
+# Split the data
+theta_list <- split_dat(theta_dat)
+
+# Save the data as good or poor spellers
+theta_good <- theta_list[1:5]
+theta_poor <- theta_list[6:10]
+
+# Plot the heat maps for both spelling groups
+plot_age_topo(theta_good)
+plot_age_topo(theta_poor)
+```
+
+
+
+```{r Plot heat topographic map of alpha by age and spelling group, fig.height= 4, fig.width= 8}
+# Split the data
+alpha1_list <- split_dat(alpha1_dat)
+
+# Save the data as good or poor spellers
+alpha1_good <- alpha1_list[1:5]
+alpha1_poor <- alpha1_list[6:10]
+
+# Plot the heat maps for both spelling groups
+plot_age_topo(alpha1_good)
+plot_age_topo(alpha1_poor)
+```
+

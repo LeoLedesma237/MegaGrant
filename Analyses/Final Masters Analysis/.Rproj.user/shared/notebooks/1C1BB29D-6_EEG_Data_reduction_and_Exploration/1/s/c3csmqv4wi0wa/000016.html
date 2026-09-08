@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<style>body{background-color:white;}</style>
+<script src="lib/jquery-3.6.0/jquery-3.6.0.min.js"></script>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<link href="lib/bootstrap-3.3.5/css/cosmo.min.css" rel="stylesheet" />
+<script src="lib/bootstrap-3.3.5/js/bootstrap.min.js"></script>
+<script src="lib/bootstrap-3.3.5/shim/html5shiv.min.js"></script>
+<script src="lib/bootstrap-3.3.5/shim/respond.min.js"></script>
+<style>h1 {font-size: 34px;}
+       h1.title {font-size: 38px;}
+       h2 {font-size: 30px;}
+       h3 {font-size: 24px;}
+       h4 {font-size: 18px;}
+       h5 {font-size: 16px;}
+       h6 {font-size: 12px;}
+       code {color: inherit; background-color: rgba(0, 0, 0, 0.04);}
+       pre:not([class]) { background-color: white }</style>
+<script src="lib/kePrint-0.0.1/kePrint.js"></script>
+<link href="lib/lightable-0.0.1/lightable.css" rel="stylesheet" />
+
+</head>
+<body>
+<table class=" lightable-paper" style='font-family: "Arial Narrow", arial, helvetica, sans-serif; width: auto !important; margin-left: auto; margin-right: auto;'>
+<caption>Final dataset ready for analysis</caption>
+ <thead>
+  <tr>
+   <th style="text-align:right;"> ID </th>
+   <th style="text-align:left;"> region_hemisphere </th>
+   <th style="text-align:left;"> FB </th>
+   <th style="text-align:left;"> Sex </th>
+   <th style="text-align:right;"> Age </th>
+   <th style="text-align:left;"> Spell_group </th>
+   <th style="text-align:left;"> Age_group </th>
+   <th style="text-align:right;"> absolute_power </th>
+   <th style="text-align:right;"> relative_power </th>
+   <th style="text-align:right;"> log_absolute_power </th>
+   <th style="text-align:right;"> logit_relative_power </th>
+   <th style="text-align:left;"> region </th>
+   <th style="text-align:left;"> hemisphere </th>
+  </tr>
+ </thead>
+<tbody>
+  <tr>
+   <td style="text-align:right;"> 10053 </td>
+   <td style="text-align:left;"> left_central </td>
+   <td style="text-align:left;"> delta </td>
+   <td style="text-align:left;"> F </td>
+   <td style="text-align:right;"> 19 </td>
+   <td style="text-align:left;"> high </td>
+   <td style="text-align:left;"> 18-20 </td>
+   <td style="text-align:right;"> 0.9338499 </td>
+   <td style="text-align:right;"> 0.0691686 </td>
+   <td style="text-align:right;"> -0.0684396 </td>
+   <td style="text-align:right;"> -2.599531 </td>
+   <td style="text-align:left;"> central </td>
+   <td style="text-align:left;"> left </td>
+  </tr>
+  <tr>
+   <td style="text-align:right;"> 10053 </td>
+   <td style="text-align:left;"> left_central </td>
+   <td style="text-align:left;"> theta </td>
+   <td style="text-align:left;"> F </td>
+   <td style="text-align:right;"> 19 </td>
+   <td style="text-align:left;"> high </td>
+   <td style="text-align:left;"> 18-20 </td>
+   <td style="text-align:right;"> 0.2772296 </td>
+   <td style="text-align:right;"> 0.0210020 </td>
+   <td style="text-align:right;"> -1.2829093 </td>
+   <td style="text-align:right;"> -3.841914 </td>
+   <td style="text-align:left;"> central </td>
+   <td style="text-align:left;"> left </td>
+  </tr>
+  <tr>
+   <td style="text-align:right;"> 10053 </td>
+   <td style="text-align:left;"> left_central </td>
+   <td style="text-align:left;"> alpha1 </td>
+   <td style="text-align:left;"> F </td>
+   <td style="text-align:right;"> 19 </td>
+   <td style="text-align:left;"> high </td>
+   <td style="text-align:left;"> 18-20 </td>
+   <td style="text-align:right;"> 0.5951903 </td>
+   <td style="text-align:right;"> 0.0441619 </td>
+   <td style="text-align:right;"> -0.5188740 </td>
+   <td style="text-align:right;"> -3.074726 </td>
+   <td style="text-align:left;"> central </td>
+   <td style="text-align:left;"> left </td>
+  </tr>
+  <tr>
+   <td style="text-align:right;"> 10053 </td>
+   <td style="text-align:left;"> left_central </td>
+   <td style="text-align:left;"> alpha2 </td>
+   <td style="text-align:left;"> F </td>
+   <td style="text-align:right;"> 19 </td>
+   <td style="text-align:left;"> high </td>
+   <td style="text-align:left;"> 18-20 </td>
+   <td style="text-align:right;"> 0.9233089 </td>
+   <td style="text-align:right;"> 0.0699222 </td>
+   <td style="text-align:right;"> -0.0797915 </td>
+   <td style="text-align:right;"> -2.587885 </td>
+   <td style="text-align:left;"> central </td>
+   <td style="text-align:left;"> left </td>
+  </tr>
+  <tr>
+   <td style="text-align:right;"> 10053 </td>
+   <td style="text-align:left;"> left_frontal </td>
+   <td style="text-align:left;"> delta </td>
+   <td style="text-align:left;"> F </td>
+   <td style="text-align:right;"> 19 </td>
+   <td style="text-align:left;"> high </td>
+   <td style="text-align:left;"> 18-20 </td>
+   <td style="text-align:right;"> 1.8135412 </td>
+   <td style="text-align:right;"> 0.0865646 </td>
+   <td style="text-align:right;"> 0.5952814 </td>
+   <td style="text-align:right;"> -2.356321 </td>
+   <td style="text-align:left;"> frontal </td>
+   <td style="text-align:left;"> left </td>
+  </tr>
+  <tr>
+   <td style="text-align:right;"> 10053 </td>
+   <td style="text-align:left;"> left_frontal </td>
+   <td style="text-align:left;"> theta </td>
+   <td style="text-align:left;"> F </td>
+   <td style="text-align:right;"> 19 </td>
+   <td style="text-align:left;"> high </td>
+   <td style="text-align:left;"> 18-20 </td>
+   <td style="text-align:right;"> 0.3058836 </td>
+   <td style="text-align:right;"> 0.0162926 </td>
+   <td style="text-align:right;"> -1.1845505 </td>
+   <td style="text-align:right;"> -4.100615 </td>
+   <td style="text-align:left;"> frontal </td>
+   <td style="text-align:left;"> left </td>
+  </tr>
+  <tr>
+   <td style="text-align:right;"> 10053 </td>
+   <td style="text-align:left;"> left_frontal </td>
+   <td style="text-align:left;"> alpha1 </td>
+   <td style="text-align:left;"> F </td>
+   <td style="text-align:right;"> 19 </td>
+   <td style="text-align:left;"> high </td>
+   <td style="text-align:left;"> 18-20 </td>
+   <td style="text-align:right;"> 0.5766021 </td>
+   <td style="text-align:right;"> 0.0354402 </td>
+   <td style="text-align:right;"> -0.5506028 </td>
+   <td style="text-align:right;"> -3.303826 </td>
+   <td style="text-align:left;"> frontal </td>
+   <td style="text-align:left;"> left </td>
+  </tr>
+  <tr>
+   <td style="text-align:right;"> 10053 </td>
+   <td style="text-align:left;"> left_frontal </td>
+   <td style="text-align:left;"> alpha2 </td>
+   <td style="text-align:left;"> F </td>
+   <td style="text-align:right;"> 19 </td>
+   <td style="text-align:left;"> high </td>
+   <td style="text-align:left;"> 18-20 </td>
+   <td style="text-align:right;"> 1.1471163 </td>
+   <td style="text-align:right;"> 0.0746631 </td>
+   <td style="text-align:right;"> 0.1372512 </td>
+   <td style="text-align:right;"> -2.517171 </td>
+   <td style="text-align:left;"> frontal </td>
+   <td style="text-align:left;"> left </td>
+  </tr>
+  <tr>
+   <td style="text-align:right;"> 10053 </td>
+   <td style="text-align:left;"> left_occipital </td>
+   <td style="text-align:left;"> delta </td>
+   <td style="text-align:left;"> F </td>
+   <td style="text-align:right;"> 19 </td>
+   <td style="text-align:left;"> high </td>
+   <td style="text-align:left;"> 18-20 </td>
+   <td style="text-align:right;"> 2.8423654 </td>
+   <td style="text-align:right;"> 0.0283104 </td>
+   <td style="text-align:right;"> 1.0446366 </td>
+   <td style="text-align:right;"> -3.535808 </td>
+   <td style="text-align:left;"> occipital </td>
+   <td style="text-align:left;"> left </td>
+  </tr>
+  <tr>
+   <td style="text-align:right;"> 10053 </td>
+   <td style="text-align:left;"> left_occipital </td>
+   <td style="text-align:left;"> theta </td>
+   <td style="text-align:left;"> F </td>
+   <td style="text-align:right;"> 19 </td>
+   <td style="text-align:left;"> high </td>
+   <td style="text-align:left;"> 18-20 </td>
+   <td style="text-align:right;"> 0.6310969 </td>
+   <td style="text-align:right;"> 0.0062773 </td>
+   <td style="text-align:right;"> -0.4602958 </td>
+   <td style="text-align:right;"> -5.064511 </td>
+   <td style="text-align:left;"> occipital </td>
+   <td style="text-align:left;"> left </td>
+  </tr>
+  <tr>
+   <td style="text-align:right;"> 10053 </td>
+   <td style="text-align:left;"> left_occipital </td>
+   <td style="text-align:left;"> alpha1 </td>
+   <td style="text-align:left;"> F </td>
+   <td style="text-align:right;"> 19 </td>
+   <td style="text-align:left;"> high </td>
+   <td style="text-align:left;"> 18-20 </td>
+   <td style="text-align:right;"> 2.4102357 </td>
+   <td style="text-align:right;"> 0.0240628 </td>
+   <td style="text-align:right;"> 0.8797246 </td>
+   <td style="text-align:right;"> -3.702732 </td>
+   <td style="text-align:left;"> occipital </td>
+   <td style="text-align:left;"> left </td>
+  </tr>
+  <tr>
+   <td style="text-align:right;"> 10053 </td>
+   <td style="text-align:left;"> left_occipital </td>
+   <td style="text-align:left;"> alpha2 </td>
+   <td style="text-align:left;"> F </td>
+   <td style="text-align:right;"> 19 </td>
+   <td style="text-align:left;"> high </td>
+   <td style="text-align:left;"> 18-20 </td>
+   <td style="text-align:right;"> 15.7408556 </td>
+   <td style="text-align:right;"> 0.1569991 </td>
+   <td style="text-align:right;"> 2.7562596 </td>
+   <td style="text-align:right;"> -1.680728 </td>
+   <td style="text-align:left;"> occipital </td>
+   <td style="text-align:left;"> left </td>
+  </tr>
+  <tr>
+   <td style="text-align:right;"> 10053 </td>
+   <td style="text-align:left;"> left_parietal </td>
+   <td style="text-align:left;"> delta </td>
+   <td style="text-align:left;"> F </td>
+   <td style="text-align:right;"> 19 </td>
+   <td style="text-align:left;"> high </td>
+   <td style="text-align:left;"> 18-20 </td>
+   <td style="text-align:right;"> 1.3469941 </td>
+   <td style="text-align:right;"> 0.0468137 </td>
+   <td style="text-align:right;"> 0.2978755 </td>
+   <td style="text-align:right;"> -3.013634 </td>
+   <td style="text-align:left;"> parietal </td>
+   <td style="text-align:left;"> left </td>
+  </tr>
+  <tr>
+   <td style="text-align:right;"> 10053 </td>
+   <td style="text-align:left;"> left_parietal </td>
+   <td style="text-align:left;"> theta </td>
+   <td style="text-align:left;"> F </td>
+   <td style="text-align:right;"> 19 </td>
+   <td style="text-align:left;"> high </td>
+   <td style="text-align:left;"> 18-20 </td>
+   <td style="text-align:right;"> 0.3314796 </td>
+   <td style="text-align:right;"> 0.0107439 </td>
+   <td style="text-align:right;"> -1.1041890 </td>
+   <td style="text-align:right;"> -4.522615 </td>
+   <td style="text-align:left;"> parietal </td>
+   <td style="text-align:left;"> left </td>
+  </tr>
+  <tr>
+   <td style="text-align:right;"> 10053 </td>
+   <td style="text-align:left;"> left_parietal </td>
+   <td style="text-align:left;"> alpha1 </td>
+   <td style="text-align:left;"> F </td>
+   <td style="text-align:right;"> 19 </td>
+   <td style="text-align:left;"> high </td>
+   <td style="text-align:left;"> 18-20 </td>
+   <td style="text-align:right;"> 1.0723847 </td>
+   <td style="text-align:right;"> 0.0368348 </td>
+   <td style="text-align:right;"> 0.0698849 </td>
+   <td style="text-align:right;"> -3.263782 </td>
+   <td style="text-align:left;"> parietal </td>
+   <td style="text-align:left;"> left </td>
+  </tr>
+  <tr>
+   <td style="text-align:right;"> 10053 </td>
+   <td style="text-align:left;"> left_parietal </td>
+   <td style="text-align:left;"> alpha2 </td>
+   <td style="text-align:left;"> F </td>
+   <td style="text-align:right;"> 19 </td>
+   <td style="text-align:left;"> high </td>
+   <td style="text-align:left;"> 18-20 </td>
+   <td style="text-align:right;"> 3.4238317 </td>
+   <td style="text-align:right;"> 0.1166203 </td>
+   <td style="text-align:right;"> 1.2307603 </td>
+   <td style="text-align:right;"> -2.024831 </td>
+   <td style="text-align:left;"> parietal </td>
+   <td style="text-align:left;"> left </td>
+  </tr>
+  <tr>
+   <td style="text-align:right;"> 10053 </td>
+   <td style="text-align:left;"> left_temporal </td>
+   <td style="text-align:left;"> delta </td>
+   <td style="text-align:left;"> F </td>
+   <td style="text-align:right;"> 19 </td>
+   <td style="text-align:left;"> high </td>
+   <td style="text-align:left;"> 18-20 </td>
+   <td style="text-align:right;"> 2.3306735 </td>
+   <td style="text-align:right;"> 0.1088440 </td>
+   <td style="text-align:right;"> 0.8461573 </td>
+   <td style="text-align:right;"> -2.102604 </td>
+   <td style="text-align:left;"> temporal </td>
+   <td style="text-align:left;"> left </td>
+  </tr>
+  <tr>
+   <td style="text-align:right;"> 10053 </td>
+   <td style="text-align:left;"> left_temporal </td>
+   <td style="text-align:left;"> theta </td>
+   <td style="text-align:left;"> F </td>
+   <td style="text-align:right;"> 19 </td>
+   <td style="text-align:left;"> high </td>
+   <td style="text-align:left;"> 18-20 </td>
+   <td style="text-align:right;"> 0.3926362 </td>
+   <td style="text-align:right;"> 0.0191312 </td>
+   <td style="text-align:right;"> -0.9348717 </td>
+   <td style="text-align:right;"> -3.937120 </td>
+   <td style="text-align:left;"> temporal </td>
+   <td style="text-align:left;"> left </td>
+  </tr>
+  <tr>
+   <td style="text-align:right;"> 10053 </td>
+   <td style="text-align:left;"> left_temporal </td>
+   <td style="text-align:left;"> alpha1 </td>
+   <td style="text-align:left;"> F </td>
+   <td style="text-align:right;"> 19 </td>
+   <td style="text-align:left;"> high </td>
+   <td style="text-align:left;"> 18-20 </td>
+   <td style="text-align:right;"> 0.5366570 </td>
+   <td style="text-align:right;"> 0.0263792 </td>
+   <td style="text-align:right;"> -0.6223962 </td>
+   <td style="text-align:right;"> -3.608446 </td>
+   <td style="text-align:left;"> temporal </td>
+   <td style="text-align:left;"> left </td>
+  </tr>
+  <tr>
+   <td style="text-align:right;"> 10053 </td>
+   <td style="text-align:left;"> left_temporal </td>
+   <td style="text-align:left;"> alpha2 </td>
+   <td style="text-align:left;"> F </td>
+   <td style="text-align:right;"> 19 </td>
+   <td style="text-align:left;"> high </td>
+   <td style="text-align:left;"> 18-20 </td>
+   <td style="text-align:right;"> 1.0769872 </td>
+   <td style="text-align:right;"> 0.0517468 </td>
+   <td style="text-align:right;"> 0.0741675 </td>
+   <td style="text-align:right;"> -2.908258 </td>
+   <td style="text-align:left;"> temporal </td>
+   <td style="text-align:left;"> left </td>
+  </tr>
+</tbody>
+</table> <script type="text/x-mathjax-config">MathJax.Hub.Config({tex2jax: {inlineMath: [["$","$"]]}})</script><script async src="https://mathjax.rstudio.com/latest/MathJax.js?config=TeX-AMS-MML_HTMLorMML"></script>
+</body>
+</html>

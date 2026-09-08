@@ -1,0 +1,392 @@
+---
+title: "8) QTPME Follow Up and Interpretations"
+output: html_document
+date: "2026-07-01"
+---
+
+```{r Universal code block setting}
+knitr::opts_chunk$set(echo = FALSE)
+knitr::opts_chunk$set(message = FALSE)
+knitr::opts_chunk$set(comment = NULL)
+knitr::opts_chunk$set(warning = FALSE)
+
+```
+
+```{r loading in the packages, warning = FALSE, echo = TRUE}
+library(tidyverse)
+library(ggplot2)
+library(patchwork)
+library(nlme) #fixef()
+library(emmeans)
+library(kableExtra)
+library(multcomp) # glht()
+library(rafalib) # imagemat()
+library(nlraa) #SSquadp3xs() 
+```
+
+
+### Problem with multcomp- it uses MASS, which messes with the dplyr select() function
+
+```{r Addressing Problem with multcomp, echo = TRUE}
+library(conflicted)
+conflict_prefer("select", "dplyr")
+conflict_prefer("fixef", "nlme")
+```
+
+```{r specifying inputs and outputs}
+# Specify the pathway to where the MegaGrant data is
+raw_data_input <- "~/GitHub/MegaGrant/Analyses/Final Masters Analysis/mods"
+  
+# Specify the output to where we want our data to be saved
+#clean_model_output <- "~/GitHub/MegaGrant/Analyses/Final Masters Analysis/mods"
+
+# Specify the output for saving tables
+save_table_output <- "~/GitHub/MegaGrant/Analyses/Final Masters Analysis/tables"
+```
+
+
+```{r reading in the QTPME models , warning = FALSE}
+# Reading in the combined data
+setwd(raw_data_input)
+delta_mods <- readRDS("delta_mod.rds")
+theta_mods  <- readRDS("theta_mod.rds")
+alpha1_mods <- readRDS("alpha1_mod.rds")
+```
+
+```{r Extracting the best fitting models from each frequency band dataset}
+# Extract the best fitting models
+delta_mod <- delta_mods$mod2
+theta_mod <- theta_mods$mod2
+alpha1_mod <- alpha1_mods$mod2
+```
+
+## Omnibus Tests From Each of the Best Fitting Models
+
+Fortunately, since each of the best fitting models is the three-way interaction one, we can display all of this information in one large table!
+
+This is the output of using the anova() function with the type argument = 'marginal', which basically shows us the omnibust test using type III sums of squares. Basically, it is testing, does this term explain additional variation in the outcome after controlling for the effects of the other terms in the model. It is nice because this approach is not influenced by term order in the model.
+
+Since the best fitting models did not include any interaction with spell group, everything we learned about generating a K matrix will not be helpful here lol. 
+
+```{r Print the Omnibus Test for the Delta Mod}
+# Create a custom function to fix up omnibus test results
+clean_omnibus_results <- function(anova_tab) {
+  anova_tab_df <- data.frame(anova_tab)
+  anova_tab_df <- anova_tab_df %>%
+    mutate(
+      p.value = case_when(
+        p.value < .001 ~ "<0.001***",
+        p.value < .01 ~ paste0(round(p.value,3),"**"),
+        p.value < .05 ~ paste0(round(p.value,3),"*"),
+        TRUE ~ paste0(round(p.value,3))),
+      F.value = round(F.value,3))
+  anova_tab_df
+}
+
+# Create a nice table for each ANOVA test
+delta_aov <- clean_omnibus_results(anova(delta_mod, type = "marginal"))
+theta_aov <- clean_omnibus_results(anova(theta_mod, type = "marginal"))
+alpha1_aov <- clean_omnibus_results(anova(alpha1_mod, type = "marginal"))
+
+# Join the ANOVA tables together
+joined_aov <- cbind(delta_aov, theta_aov, alpha1_aov)
+rbind_aov <- rbind(delta_aov, theta_aov, alpha1_aov)
+
+# Clean up the rbind dataset a bit
+rbind_aov$Term <- row.names(rbind_aov); row.names(rbind_aov) <- NULL
+rbind_aov <- select(rbind_aov, Term, everything())
+
+# Modify the row names
+row_names <- row.names(joined_aov)
+row_names <- gsub("xs.", "", gsub("b.", "", gsub("a.", "", row_names)))
+row_names <- gsub("\\(Intercept)", "Intercept", row_names)
+row_names <- gsub("region", "Region", row_names)
+row_names <- gsub("hemisphere", "Hemisphere", row_names)
+row_names <- gsub("Spell_group", "Spell Group", row_names)
+row_names <- gsub(":", " x ", row_names)
+
+# Introduce the cleaned row names
+row.names(joined_aov) <- NULL
+joined_aov <- cbind(`.` = row_names, joined_aov)
+
+# Print the joined table
+joined_aov %>%
+  kbl(
+    caption = "Table 1: Omnibus Test of Fixed Effects for the Final QTPME Models",
+    col.names = c("Term", 
+                  "df num", "df den","F", "p",
+                  "df num", "df den","F", "p",
+                  "df num", "df den","F", "p"),
+    align = c("l", 
+              "c", "c", "c", "c", 
+              "c", "c", "c", "c", 
+              "c", "c", "c", "c"),
+    format = "html" ) %>%
+  kable_classic(full_width = FALSE, html_font = "Times New Roman") %>%
+  add_header_above(c(" " = 1 ,"Delta" = 4, "Theta" = 4, "Alpha1" = 4)) %>%
+  pack_rows("Intercept Parameter (a)", 1, 6) %>%
+  pack_rows("Instantaneous Slope Parameter (b)", 7, 8) %>%
+  pack_rows("Join Point Parameter Parameter (xs)", 9, 10)
+
+
+# Save the table
+table_name1 = "Table3_Omnibus_Results.csv"
+full_table_name1 = file.path(save_table_output, table_name1)
+write.csv(rbind_aov, full_table_name1, row.names = FALSE, quote = FALSE)
+
+```
+
+## Spelling Beta Estimates Family With P-value Adjustments
+
+```{r Create a custom function for a p value rounding function}
+# Create a custom function to clean up p-values
+clean_p <- function(p.value) {
+  ifelse(p.value < .001, "<.001***",
+         ifelse(p.value < .01, paste0(round(p.value,3), "**"),
+                ifelse(p.value < .05, paste0(round(p.value,3), "*"),
+                       paste0(round(p.value,3)))))
+  
+}
+```
+
+```{r Extract the spelling beta estimatess families and adjust p-values, echo = FALSE}
+# Create a custom function to return all the spelling-related tests
+extract_spellTests <- function(mod) {
+  sum_tab <- data.frame(summary(mod)$tTable)
+  sum_tab <- cbind(Term = row.names(sum_tab), sum_tab)
+  row.names(sum_tab) <- NULL
+  sum_tab[grepl("Spell|Inter", sum_tab$Term),]
+}
+
+# Extract the spelling tests for each of the frequency band datasets
+delta_spllTest <- extract_spellTests(delta_mod)
+theta_spllTest <- extract_spellTests(theta_mod)
+alpha1_spllTest <- extract_spellTests(alpha1_mod)
+
+# Add an adjusted p-value column
+delta_spllTest$adj.p <- p.adjust(delta_spllTest$p.value, method = "BH")
+theta_spllTest$adj.p <- p.adjust(theta_spllTest$p.value, method = "BH")
+alpha1_spllTest$adj.p <- p.adjust(alpha1_spllTest$p.value, method = "BH")
+
+# Clean the pvalues and round the other values
+delta_spllTest <- mutate(delta_spllTest, p.value = clean_p(p.value), adj.p = clean_p(adj.p)) %>% mutate_if(is.numeric, ~round(., 2))
+theta_spllTest <- mutate(theta_spllTest, p.value = clean_p(p.value), adj.p = clean_p(adj.p)) %>% mutate_if(is.numeric, ~round(., 2))
+alpha1_spllTest <- mutate(alpha1_spllTest, p.value = clean_p(p.value), adj.p = clean_p(adj.p)) %>% mutate_if(is.numeric, ~round(., 2))
+
+# Show the beta estimates with the adjusted p-values
+comb_spllTest <- delta_spllTest %>%
+  bind_rows(theta_spllTest) %>%
+  bind_rows(alpha1_spllTest)
+
+# Identify the spell rows
+spell_rows <- which(grepl("Spell_group", comb_spllTest$Term))
+
+# Print out the spelling tests
+comb_spllTest %>%
+  kbl(
+    caption = "Table 2: Parameter Estimats for Spelling Group Effects",
+    col.names = c("Term", 
+                  "B", "SE", "DF","t", "p", "p (adjusted)"),
+    align = c("l", 
+              "c", "c", "c", "c", "c", "c"),
+    format = "html" ) %>%
+  kable_classic(full_width = FALSE, html_font = "Times New Roman") %>%
+  #row_spec(spell_rows, bold = TRUE) %>%
+  pack_rows("Delta Band", 1, 6) %>%
+  pack_rows("Theta Band", 7, 12) %>%
+  pack_rows("Alpha Band", 13, 18)
+
+# Save the table
+table_name2 = "Table4_Spelling_Beta_Adjusted.csv"
+full_table_name2 = file.path(save_table_output, table_name2)
+write.csv(comb_spllTest, full_table_name2, row.names = FALSE, quote = FALSE)
+
+```
+
+## Creating a Figure of the Predicted Values for each of the Spelling Groups
+
+```{r Visualzing the Predicted Values for Each of the Spelling Groups, fig.height= 5, fig.width= 8}
+# Aesthetics (Leo version)
+theme_clean <- function() {
+  theme_minimal() +
+    theme(legend.position = "bottom",
+          panel.grid.minor = element_blank(),
+          plot.title = element_text(hjust = 0.5,
+                                    size = 10),
+          plot.caption = element_text(hjust = 0.5),
+          strip.text = element_text(size = 12)
+          ) 
+}
+
+# Create a custom function that returns an expanded grid of model factors
+# We only care for spelling group- and since there were no significant spellin group interacton, we can assume its relation with power will be the same across all levels of topography and sex
+expand_grid_fun <- function(dat) {
+    expand.grid(
+    Age_min_c = seq(min(dat$Age_min_c), max(dat$Age_min_c), length.out = 100),
+    Sex = "F",
+    hemisphere = "left",
+    region = "central",
+    Spell_group = levels(dat$Spell_group)
+  )
+}
+
+# Extract the original data that the models were fitted to
+delta_dat <- delta_mod$data
+theta_dat <- theta_mod$data
+alpha1_dat <- alpha1_mod$data
+
+# Generate expanded grids for each of the three frequency bands
+delta_expand <- expand_grid_fun(delta_dat)
+theta_expand <- expand_grid_fun(theta_dat)
+alpha1_expand <- expand_grid_fun(alpha1_dat)
+
+# Add the predicted values back into the expanded grid
+delta_expand$pred <- predict(delta_mod, newdata = delta_expand, level = 0)
+theta_expand$pred <- predict(theta_mod, newdata = theta_expand, level = 0)
+alpha1_expand$pred <- predict(alpha1_mod, newdata = alpha1_expand, level = 0)
+
+# Add some important information to the expanded datasets
+delta_expand <- mutate(delta_expand, Age = Age_min_c + 15, FB = "delta")
+theta_expand <- mutate(theta_expand, Age = Age_min_c + 15, FB = "theta")
+alpha1_expand <- mutate(alpha1_expand, Age = Age_min_c + 15, FB = "alpha1")
+
+# Combine them together and same with the datasets
+comb_expand <- rbind(delta_expand, theta_expand, alpha1_expand) %>%
+  mutate(Spell_group = ifelse(Spell_group == "low", "Poor", "Good")) %>%
+  mutate(FB = factor(FB, levels = c("delta", "theta", "alpha1"))) %>%
+  mutate(Spell_group = factor(Spell_group, levels = c("Poor", "Good")))
+comb_dat <- rbind(delta_dat, theta_dat, alpha1_dat) %>%
+  mutate(FB = factor(FB, levels = c("delta", "theta", "alpha1")))  %>%
+  mutate(Spell_group = ifelse(Spell_group == "low", "Poor", "Good"))
+  
+# Create the prediction plots
+comb_dat %>%
+  ggplot(aes(x = Age, y = log_absolute_power)) +
+  geom_point(size = .2, alpha = .6) +
+  facet_wrap(~FB, nrow = 1, scales = "free") +
+  geom_line(data = comb_expand, aes(x = Age, y = pred, color = Spell_group), size = 1) +
+  labs(y = "Log Absolute Power", x = "Age", color = "Spelling Group") +
+  theme_clean()
+
+
+```
+
+
+## Full Fixed and Random Effects for All Models
+
+```{r Creating several custom functions to extract random and fixed effects from the nlme models}
+# Create a custom function to extract the fixed effects of the model in a tidy way
+extract_fixed <- function(nlme){
+  # Extract the model summary table
+  coef_tab <- summary(nlme)$tTable
+  
+  # Save the information as a nice table frame
+  coef_df <- data.frame(
+    Term = rownames(coef_tab),
+    coef_tab,
+    row.names = NULL
+  ) %>% tibble()
+  
+  # Clean up the p values
+  coef_df <- mutate(coef_df, p.value = clean_p(p.value))
+  
+  # Extract the 95% CI
+  CI <- nlme::intervals(nlme)$fixed %>% data.frame()
+  
+  # Combined the upper and lower into one var
+  CI <- CI %>% transmute(est.,
+                  CI = paste0("[",round(lower,2),",", round(upper,2),"]"))
+  
+  # Introduce the CI into the dataframe
+  joined_df <- left_join(coef_df, rename(CI, Value = est.), by = "Value")
+  
+  # Change values to three decimal places
+  joined_df <- joined_df %>% mutate_if(is.numeric, ~round(., 2))
+  
+  # Change the variable order
+  joined_df %>% select(Term, Value ,Std.Error, CI , DF, t.value, p.value)
+}
+
+# Create a custom function to extract the random effects of the model in a tidy way
+extract_random <- function(nlme){
+  # Get the variance/covariance matrix
+  vc <- nlme::VarCorr(nlme)
+  
+  # Extract the intercept and residual standard deviation
+  var_intercept <- as.numeric(vc["a.(Intercept)", "Variance"])
+  var_residual  <- as.numeric(vc["Residual", "Variance"])
+  
+  # Calculate the conditional ICC
+  cond_ICC <- var_intercept / (var_residual + var_intercept)
+  
+  
+  # Save the information as a data frame
+  rand_df <- data.frame(
+  Term = c("τ₀₀ (ID Intercept for 'a')", "σ² (Residual Variance)", "Conditional ICC"),
+  Value = c(var_intercept, var_residual, cond_ICC) # Variances
+  ) %>% tibble()
+  
+  # Change values to three decimal places
+  rand_df %>% mutate_if(is.numeric, ~round(., 2))
+}
+
+# Create a custom function that returns a tidy table of fixed and random effects
+tidy_fixed_random <- function(nlme) {
+  bind_rows(extract_fixed(nlme), 
+            extract_random(nlme))
+}
+
+```
+
+
+```{r Extracting model fixed and random effects and generating a table}
+# Get the fixed and random effects for each model
+tidy_delta_mod <- tidy_fixed_random(delta_mod)
+tidy_theta_mod <- tidy_fixed_random(theta_mod)
+tidy_alpha1_mod <- tidy_fixed_random(alpha1_mod)
+
+# Combine the datasets into one and round values to three decimal points
+tidy_combined <- cbind(
+  tidy_delta_mod,
+  select(tidy_theta_mod, - Term),
+  select(tidy_alpha1_mod, - Term)
+)
+
+# Replace NA's with just an empty character
+tidy_combined[is.na(tidy_combined)] <- ""
+
+# Create the table
+full_param_table <- tidy_combined %>%
+  kbl(
+    caption = "Table 3: Fixed and Random Effect Parameter Estimates for each Frequency Band QTPME Model",
+    col.names = c("Term", 
+                  "B", "SE","95% CI", "DF","t", "p",
+                  "B", "SE","95% CI", "DF","t", "p",
+                  "B", "SE","95% CI", "DF","t", "p"),
+    align = c("l", 
+              "c", "c", "c", "c", "c", "c",
+              "c", "c", "c", "c", "c", "c",
+              "c", "c", "c", "c", "c", "c"),
+    format = "html" #
+  )  %>%
+  # Apply strict APA styling
+  kable_classic(full_width = FALSE, html_font = "Times New Roman") %>%
+  add_header_above(c(" " = 1 ,"Delta" = 6, "Theta" = 6, "Alpha1" = 6)) %>%
+  pack_rows("Intercept Parameter (a)", 1, 12, label_row_css = "font-weight: bold; border-bottom: 1px solid #eee;") %>%
+  pack_rows("Instantaneous Slope Parameter (b)", 13, 14, label_row_css = "font-weight: bold; border-bottom: 1px solid #eee;") %>%
+  pack_rows("Join Point Parameter (xs)", 15, 16, label_row_css = "font-weight: bold; border-bottom: 1px solid #eee;") %>%
+  pack_rows("Random Effects", 17, 19, label_row_css = "font-weight: bold; border-bottom: 1px solid #eee;") %>%
+  footnote(
+    general = "95% CI represent 95% Wald confidence intervals. Parameter-level p-values are unadjusted and a direct result from the model output. τ₀₀ denotes the random intercept variance, σ² denotes the residual variance, and the conditional ICC represents the proportion of residual variance attributable to between-participant differences after accounting for the fixed effects.",
+    general_title = "Note.",
+    footnote_as_chunk = TRUE
+  )
+
+# Print the table
+full_param_table
+```
+
+
+
+
+

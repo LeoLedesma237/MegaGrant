@@ -1,0 +1,8 @@
+"0",""
+"0","# Generate APF plots for Spelling Groups"
+"0","APF_dat %>%"
+"0","  ggplot(aes(x = Spell_group, y = APF)) +"
+"0","  geom_boxplot( ) +"
+"0","  labs(title = ""Avg Occipital APF Seems Slightly Higher in Low Spell Group"","
+"0","       caption = ""This is the opposite of what we would expect lmao"") +"
+"0","  theme_clean()"

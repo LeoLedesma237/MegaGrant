@@ -1,0 +1,13 @@
+"0","# fit a linear mixed-effects model to data"
+"0","mod_sim <- lmer(RT ~ 1 + X_i + (1 | item_id) + (1 + X_i | subj_id),"
+"0","                data = dat_sim)"
+"1","[1m[33mError[39m:[22m
+[38;5;232m[33m![38;5;232m [90m[conflicted][38;5;232m [1mlmer[22m found in 2 packages.
+Either pick the one you want with `::`:
+[36m•[38;5;232m [34mlmerTest[38;5;232m::lmer
+[36m•[38;5;232m [34mlme4[38;5;232m::lmer
+Or declare a preference with `conflicts_prefer()`:
+[36m•[38;5;232m ]8;;ide:run:conflicted::conflicts_prefer(lmerTest::lmer)conflicts_prefer(lmerTest::lmer)]8;;
+[36m•[38;5;232m ]8;;ide:run:conflicted::conflicts_prefer(lme4::lmer)conflicts_prefer(lme4::lmer)]8;;[39m
+[90mRun `]8;;x-r-run:rlang::last_trace()rlang::last_trace()]8;;` to see where the error occurred.[39m
+"

@@ -1,0 +1,8 @@
+"0",""
+"0","# Create lists with the model outputs"
+"0","theta_mods <- list("
+"0","  mod1 = theta_QTPME1,"
+"0","  mod2 = theta_QTPME2,"
+"0","  mod3 = theta_QTPME3,"
+"0","  mod4 = theta_QTPME4"
+"0",")"

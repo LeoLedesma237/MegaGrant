@@ -1,0 +1,8 @@
+"0","# set all data-generating parameters"
+"0","beta_0  <- 800 # intercept; i.e., the grand mean"
+"0","beta_1  <-  50 # slope; i.e, effect of category"
+"0","omega_0 <-  80 # by-item random intercept sd"
+"0","tau_0   <- 100 # by-subject random intercept sd"
+"0","tau_1   <-  40 # by-subject random slope sd"
+"0","rho     <-  .2 # correlation between intercept and slope"
+"0","sigma   <- 200 # residual (error) sd"

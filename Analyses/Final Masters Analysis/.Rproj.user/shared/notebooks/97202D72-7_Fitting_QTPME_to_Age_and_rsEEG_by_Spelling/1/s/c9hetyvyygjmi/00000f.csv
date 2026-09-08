@@ -1,0 +1,5 @@
+"0","# Remove alpha 2"
+"0","dat <- filter(dat, FB != ""alpha2"")"
+"0",""
+"0","# Remove absolute power, relative power and region_hemisphere"
+"0","dat <- select(dat, -absolute_power, -relative_power, - region_hemisphere)"

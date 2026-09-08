@@ -1,0 +1,6 @@
+"0","# Produce a dataframe of the crossed within subject factors"
+"0","crossed_top <- expand.grid(region = unique(delta_dat$region), "
+"0","                           hemisphere = unique(delta_dat$hemisphere))"
+"0",""
+"0","# Print to show the crossed data frame"
+"0","crossed_top"

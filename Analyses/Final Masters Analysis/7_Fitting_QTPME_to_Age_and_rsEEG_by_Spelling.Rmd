@@ -1,0 +1,654 @@
+---
+title: "7) Fitting QTPME Models to the rsEEG Data"
+output: html_document
+date: "2026-07-01"
+---
+
+```{r Universal code block setting}
+knitr::opts_chunk$set(echo = FALSE)
+knitr::opts_chunk$set(message = FALSE)
+knitr::opts_chunk$set(comment = NULL)
+knitr::opts_chunk$set(warning = FALSE)
+
+```
+
+```{r loading in the packages, warning = FALSE, echo = TRUE, message= F}
+# Load in the package
+library(tidyverse)
+library(ggplot2)
+library(patchwork)
+library(nlme)
+library(nlraa)
+```
+
+```{r Addressing Problem with multcomp, echo = TRUE}
+library(conflicted)
+conflict_prefer("filter", "dplyr")
+```
+
+```{r setting seed just in case}
+# Set seed
+set.seed(123)
+
+```
+
+```{r specifying inputs and outputs}
+# Specify the pathway to where the MegaGrant data is
+raw_data_input <- '~/GitHub/MegaGrant/Analyses/Final Masters Analysis/data'
+  
+# Specify the output to where we want our data to be saved
+clean_model_output <- "~/GitHub/MegaGrant/Analyses/Final Masters Analysis/mods"
+```
+
+
+```{r reading in the final dataset , warning = FALSE}
+# Reading in the combined data
+setwd(raw_data_input)
+dat <- readRDS("6_final.rds")
+
+```
+
+```{r Minor data cleaning to prepare for analysis}
+# Remove alpha 2
+dat <- filter(dat, FB != "alpha2")
+
+# Remove absolute power, relative power and region_hemisphere
+dat <- select(dat, -absolute_power, -relative_power, - region_hemisphere)
+```
+
+### Specifying the factors
+
+Here we will be specifying the factors of our model so that we know how to interpret the intercept and the effects essentially. In our current dataset, there are 6 categorical variables:
+
+- ID
+- FB
+- Sex
+_ Spell_group
+- region
+- hemisphere
+
+These will be the function of each one:
+
+- ID (don't matter), used to model the random intercepts, we don't care about the class of this variable
+- FB (don't matter), will be split by unique levels of the variable, we don't care about the class of this variable
+- Sex (**dummy coded**), will be used for the analysis but will only function as a main effect. We can have the reference as female
+- Spell_group (**dummy coded**), is our main predictor of interest, we should have the reference as good so that we estimate the effect of poor and leave it as.
+- region (**effect coded**), there are 5 regions and keeping it dummy coded will produce effects compared to the reference, will be much more informative to use effect coding instead. The interpretation will change to the grand average of the region levels.
+- hemisphere (**effect coded**), while it is a dichotmous variable and leaving it as dummy coded will make us know the power difference between the levels, the hemisphere interactions will make this difficulty, so it might be better to just have it as effect coded, so that it also represents an average of the two levels.
+
+
+
+```{r Specifying the factors}
+# Specifying the dummy coded variables and their reference
+dat$Spell_group <- relevel(factor(dat$Spell_group), ref = "high") # Good spellers
+dat$Sex <- relevel(factor(dat$Sex), ref = "F") # Females
+
+# Generate effect coding contrasts for region
+region_contrasts <- contr.sum(length(unique(dat$region)))
+(rownames(region_contrasts) <- levels(dat$region))
+colnames(region_contrasts) <- levels(dat$region)[1:4]
+region_contrasts
+
+# Generate effect coding contrasts for hemisphere
+hemisphere_contrasts <- contr.sum(length(unique(dat$hemisphere)))
+rownames(hemisphere_contrasts) <- levels(dat$hemisphere)
+colnames(hemisphere_contrasts) <- levels(dat$hemisphere)[1]
+hemisphere_contrasts
+
+# Integrate these contrasts into the default contrast of the topographic factors
+contrasts(dat$region) <- region_contrasts
+contrasts(dat$hemisphere) <- hemisphere_contrasts
+
+# Centering Age
+dat <- dat %>%
+  mutate(Age_min_c = Age - min(Age))
+
+# What is the min age
+cat("The min age of the sample is", min(dat$Age))
+
+# Create datasets by frequency bands
+delta_dat <- filter(dat, FB == "delta")
+theta_dat <- filter(dat, FB == "theta")
+alpha1_dat <- filter(dat, FB == "alpha1")
+```
+
+### Simulate three potential outcomes for our data
+
+
+```{r Simulating different outcomes we could find}
+# Aesthetics (Leo version)
+theme_clean <- function() {
+  theme_minimal() +
+    theme(legend.position = "bottom",
+          panel.grid.minor = element_blank(),
+          plot.title = element_text(hjust = 0.5,
+                                    size = 10),
+          plot.caption = element_text(hjust = 0.5)
+          ) 
+}
+
+# a = intercept
+# b = slope
+# c = quadratic term (curvy bit)
+# jp = join point = break point = critical concentration
+
+qp <- function(x, a, b, jp) {
+    c <- -0.5 * b / jp
+    if_else(condition = x < jp,
+            true  = a + (b * x) + (c * x * x),
+            false = a + (b * jp) + (c * jp * jp))
+}
+
+# Create some fitted values
+x <- 12:30
+y1 <- qp(x, 28+16, -2-1.2, 25)
+y2 <- qp(x, 36+16, -2-1.2, 25)
+y3 <- qp(x, 36+20, -2-1.57, 29)
+y4 <- qp(x, 28+18.5+3, -2-1.25, 26.5)
+y5 <- qp(x, 28+18.5+4, -2-1.2, 27)
+
+# Create a data frame
+p_out <- data.frame(x = x, 
+                    Good = y1,
+                    Poor = y2)
+
+# Create another dataframe
+p_out2 <- data.frame(x = x, 
+                    Good = y1,
+                    Poor = y3)
+
+
+# Create another data frame
+p_out3 <- data.frame(x = x, 
+                     Good = y4,
+                     Poor = y5)
+
+# Convert to long format
+p_out_long <- p_out %>%
+  pivot_longer(cols = c(Good, Poor),
+               names_to = "group",
+               values_to = "y")
+
+p_out_long2 <- p_out2 %>%
+  pivot_longer(cols =  c(Good, Poor),
+               names_to = "group",
+               values_to = "y")
+
+p_out_long3 <- p_out3 %>%
+  pivot_longer(cols =  c(Good, Poor),
+               names_to = "group",
+               values_to = "y")
+
+# Plot the lines
+h1 <- p_out_long2 %>%
+  mutate(group = factor(group, levels = c("Poor", "Good"))) %>%
+  ggplot(aes(x = x, y = y, color = group)) +
+  geom_vline(xintercept = 24, linetype="dashed", color = "black") +
+  geom_vline(xintercept = 28, linetype="dashed", color = "black") +
+  geom_hline(yintercept = 4, linetype="dashed", color = "black") +
+  geom_line(linewidth = 1) +
+  labs(title = "A: Maturational Lag", x= NULL, y = "Log(Absolute Power)", color = NULL) +
+  coord_cartesian(
+    xlim = c(11, 30),     
+    ylim = c(0, 22)       
+  ) +
+  theme_clean() +
+  theme(axis.text.y = element_blank())  # Remove y-axis values
+
+h2 <- p_out_long %>%
+  mutate(group = factor(group, levels = c("Poor", "Good"))) %>%
+  ggplot(aes(x = x, y = y, color = group)) +
+  geom_vline(xintercept = 24, linetype="dashed", color = "black") +
+  geom_hline(yintercept = 12, linetype="dashed", color = "black") +
+  geom_hline(yintercept = 4, linetype="dashed", color = "black") +
+  geom_line(linewidth = 1) +
+  labs(title = "B: Maturational Deficit", x= "Age (Years)", y = NULL, color = "Spelling Groups") +
+  coord_cartesian(
+    xlim = c(11, 30),     
+    ylim = c(0, 22)       
+  ) +
+  theme_clean() +
+  theme(axis.text.y = element_blank())  # Remove y-axis values
+
+
+h3 <- p_out_long3 %>%
+  mutate(group = factor(group, levels = c("Poor", "Good"))) %>%
+  ggplot(aes(x = x, y = y, color = group)) +
+  geom_vline(xintercept = 26, linetype="dashed", color = "black") +
+  geom_hline(yintercept = 7.5, linetype="dashed", color = "black") +
+  geom_hline(yintercept = 6.5, linetype="dashed", color = "black") +
+  geom_line(linewidth = 1) +
+  labs(title = "C: Comparable Development", x= NULL, y = NULL, color = NULL) +
+  coord_cartesian(
+    xlim = c(11, 30),     
+    ylim = c(2.5, 24.5)       
+  ) +
+  theme_clean() +
+  theme(axis.text.y = element_blank())  # Remove y-axis values
+
+# Print all side by side
+h1 + h2 + h3
+```
+
+
+### Initial Fitting of a QTPME for Delta
+
+So this is essentially what fitting a quadratic to plateau mixed effects (QTPME) model looks like. Basically there is a lot going on so lets break it down. Starting first, the QTPME is a **non-linear** mixed-effects model, so we will be using the `nlme()` function to specify this. When working with non-linear models, we also need to provide two more sources of information: the model rules and the starting values. 
+
+For the model rules, that is basically the Quadratic to Plateau part, which we specify using the SSquadp3xs() function. Next, for the starting values, we are basically picking values that make sense to us, down below we chose:
+
+- intercept = 3
+- slope = - 4
+- join point = 28
+
+We chose these arbitrarily and the model still ran- so that's a good thing however there is the risk that our first set of starting values will produce an error, which will mean we will need to try a new set and hope that works.
+
+In addition to this, there is the 'fixed' argument in the formula where we tell the model what fixed effects we want for each of the three parameters below: a, b, xs. To make things more confusing is the start argument. 
+
+```{r Initial Fitting of the QTPME, echo = TRUE}
+mod <- nlme(log_absolute_power ~ SSquadp3xs(Age_min_c, a, b, xs),
+                        data = delta_dat,                               
+                        fixed = list(a ~ Sex + hemisphere + region + Spell_group, 
+                                     b ~ Spell_group, 
+                                     xs ~ Spell_group),
+                        random = a ~ 1 | ID,
+                        start = c(a = 3, rep(0, 1 + 1 + 4 + 1 + 1 - 1),
+                                   b = -4, 0, 
+                                   xs = 28, 0),
+                        control = nlmeControl(msMaxIter = 2000))
+
+mod
+```
+
+
+### Introducing the Custom Functions to Run QTPME Models
+
+Below we are introducing two custom functions that are basically going to make our lives extremely easy. The first one takes in a 'formula_list', which is a specific list object that contains the formulas to specify the fixed effects of the three parameters, the dataset, and the chosen starting values (this is manual as is). Basically this function returns the starting value vectors that are needed in the 'start' argument. What is great is that it can do this for specified models that only include main effects and those that include interactions!
+
+The next custom function runs the QTPME using the information from the 'formula_list' and the starting value vectors. The QTPME will automatically run using Age_min_c as a predictor. 
+
+
+
+**Imporant**: The first time running the functions everything worked no problem! However, as they were, the ouput was incompatible with emmeans(), because of how emmeans used the model object information to recreate stuff. Fortunately, we were able to identify the problems, which was the way the model$call was being saved and we wrote additional lines of code in the fit_QTPME() function that now fixes it!
+
+
+```{r Showing of the custom functions, echo = TRUE}
+# Function 1: creating a custom function to generate a list of starting values
+gen_start_vectors <- function(formula_list) {
+  
+  # 1. Stitch the DV to the one-sided formulas using update()
+  form_a  <- update(formula_list$formula_a,  log_absolute_power ~ .)
+  form_b  <- update(formula_list$formula_b,  log_absolute_power ~ .)
+  form_xs <- update(formula_list$formula_xs, log_absolute_power ~ .)
+  
+  # 2. Run the dummy linear models
+  mod_a  <- lm(form_a,  data = formula_list$data)
+  mod_b  <- lm(form_b,  data = formula_list$data)
+  mod_xs <- lm(form_xs, data = formula_list$data)
+  
+  # 3. Calculate the parameter numbers
+  param_num_a <- length(coef(mod_a)) - 1
+  param_num_b <- length(coef(mod_b)) - 1
+  param_num_xs <-  length(coef(mod_xs)) - 1
+  
+  # 4. Create the starting value vectors
+  list(
+    start_val_a = c(formula_list$starting_vals["a"], rep(0, param_num_a)),
+    start_val_b = c(formula_list$starting_vals["b"], rep(0, param_num_b)),
+    start_val_xs = c(formula_list$starting_vals["xs"], rep(0, param_num_xs)) 
+  )
+}
+
+# Function 2: Create a custom function to fit a QTP model
+fit_QTPME <- function(formula_list, QTP_start) {
+  
+  # Dynamically construct the named, two-sided formula strings nlme expects
+  fixed_a  <- as.formula(paste("a",  paste(deparse(formula_list$formula_a),  collapse="")))
+  fixed_b  <- as.formula(paste("b",  paste(deparse(formula_list$formula_b),  collapse="")))
+  fixed_xs <- as.formula(paste("xs", paste(deparse(formula_list$formula_xs), collapse="")))
+  
+  mod <- nlme(log_absolute_power ~ SSquadp3xs(Age_min_c, a, b, xs), # Age centered at youngest age in sample
+       data = formula_list$data,                                        
+       fixed = list(fixed_a, fixed_b, fixed_xs), # Now properly formatted as a ~ ..., b ~ ...
+       random = a ~ 1 | ID,
+       start = c(a = QTP_start$start_val_a,
+                 b = QTP_start$start_val_b, 
+                 xs = QTP_start$start_val_xs),
+       control = nlmeControl(msMaxIter = 2000))
+  
+  ## ---- repair the stored call ----
+  mod$call$fixed <- eval(substitute(
+    list(A, B, C),
+    list(
+      A = fixed_a,
+      B = fixed_b,
+      C = fixed_xs
+    )
+  ))
+
+  ## store the actual data in the model object
+  mod$data <- formula_list$data
+
+  ## point the call to the stored data
+  mod$call$data <- quote(mod$data)
+  
+  # Return the model
+  return(mod)
+}
+```
+
+
+### MVP Custom Function
+
+This is the MVP custom function! Similar to what we did in the Creating Spelling Groups .html, here we asked AI to basically generate us a function that will identify starting values that will produce model convergence. We will only use this function if our initial starting values that were manually chosen end up failing, which is the case in **alpha1**.
+
+```{r MVP custom function, echo = TRUE}
+fit_QTPME_grid <- function(formula_list,
+                           a_vals = seq(1, 5, by = 1),
+                           b_vals = seq(-8, 2, by = 1),
+                           xs_vals = seq(20, 32, by = 1)) {
+  
+  starts <- expand.grid(
+    a0 = a_vals,
+    b0 = b_vals,
+    xs0 = xs_vals
+  )
+  
+  for(i in seq_len(nrow(starts))) {
+    
+    cat(
+      "Trying:",
+      "a =", starts$a0[i],
+      "b =", starts$b0[i],
+      "xs =", starts$xs0[i], "\n"
+    )
+    
+    tmp_formula <- formula_list
+    
+    tmp_formula$starting_vals <- c(
+      a  = starts$a0[i],
+      b  = starts$b0[i],
+      xs = starts$xs0[i]
+    )
+    
+    start_vec <- gen_start_vectors(tmp_formula)
+    
+    fit <- try(
+      fit_QTPME(tmp_formula, start_vec),
+      silent = TRUE
+    )
+    
+    if(!inherits(fit, "try-error")) {
+      
+      cat(
+        "\nSuccessful fit!\n",
+        "a =", starts$a0[i],
+        "b =", starts$b0[i],
+        "xs =", starts$xs0[i], "\n"
+      )
+      
+      return(
+        list(
+          fit = fit,
+          starts = starts[i, ]
+        )
+      )
+    }
+  }
+  
+  stop("No starting values converged.")
+}
+
+
+```
+
+
+### Running QTPME Models for Delta
+
+We will show the code just for delta but the same thing will also be done for theta and alpha1. 
+
+```{r Running QTPME models for delta, echo = TRUE}
+# 1. Main effects only model
+formula_list_main <- list(
+  formula_a = ~ Sex + hemisphere + region + Spell_group,
+  formula_b = ~ Spell_group,
+  formula_xs = ~ Spell_group,
+  data = delta_dat,
+  starting_vals = c(a = 3, b = -4, xs = 28)
+)
+
+# 2. Add topographic interaction
+formula_list_regionHemisphere <- list(
+  formula_a = ~ Sex + hemisphere + region + Spell_group + hemisphere:region,
+  formula_b = ~ Spell_group,
+  formula_xs = ~ Spell_group,
+  data = delta_dat,
+  starting_vals = c(a = 3, b = -4, xs = 28)
+)
+
+# 3. Add the spelling related two-way interactions
+formula_list_spelling2way <- list(
+  formula_a = ~ Sex + hemisphere + region + Spell_group + hemisphere:region + hemisphere:Spell_group + region:Spell_group,
+  formula_b = ~ Spell_group,
+  formula_xs = ~ Spell_group,
+  data = delta_dat,
+  starting_vals = c(a = 3, b = -4, xs = 28)
+)
+
+# 4. Add the full three-way interaction
+formula_list_spelling3way <- list(
+  formula_a = ~ Sex + region*Spell_group*hemisphere,
+  formula_b = ~ Spell_group,
+  formula_xs = ~ Spell_group,
+  data = delta_dat,
+  starting_vals = c(a = 3, b = -4, xs = 28)
+  
+)
+
+
+# Step2: Generate the starting values
+QTP_start_main <- gen_start_vectors(formula_list_main)
+QTP_start_regionHemisphere <- gen_start_vectors(formula_list_regionHemisphere)
+QTP_start_spelling2way <- gen_start_vectors(formula_list_spelling2way)
+QTP_start_spelling3way <- gen_start_vectors(formula_list_spelling3way)
+
+# Step 3: Fit the QTPME
+delta_QTPME1 <- fit_QTPME(formula_list_main, QTP_start_main)
+delta_QTPME2 <- fit_QTPME(formula_list_regionHemisphere, QTP_start_regionHemisphere)
+delta_QTPME3 <- fit_QTPME(formula_list_spelling2way, QTP_start_spelling2way)
+delta_QTPME4 <- fit_QTPME(formula_list_spelling3way, QTP_start_spelling3way)
+
+# Does the interactions on the intercept improve model fit?
+anova(delta_QTPME1, delta_QTPME2, delta_QTPME3, delta_QTPME4)
+
+# Create lists with the model outputs
+delta_mods <- list(
+  mod1 = delta_QTPME1,
+  mod2 = delta_QTPME2,
+  mod3 = delta_QTPME3,
+  mod4 = delta_QTPME4
+)
+```
+
+### Running QTPME Models for Theta
+
+
+```{r Running QTPME models for theta, echo = FALSE}
+# 1. Main effects only model
+formula_list_main <- list(
+  formula_a = ~ Sex + hemisphere + region + Spell_group,
+  formula_b = ~ Spell_group,
+  formula_xs = ~ Spell_group,
+  data = theta_dat,
+  starting_vals = c(a = 3, b = -4, xs = 28)
+)
+
+# 2. Add topographic interaction
+formula_list_regionHemisphere <- list(
+  formula_a = ~ Sex + hemisphere + region + Spell_group + hemisphere:region,
+  formula_b = ~ Spell_group,
+  formula_xs = ~ Spell_group,
+  data = theta_dat,
+  starting_vals = c(a = 3, b = -4, xs = 28)
+)
+
+# 3. Add the spelling related two-way interactions
+formula_list_spelling2way <- list(
+  formula_a = ~ Sex + hemisphere + region + Spell_group + hemisphere:region + hemisphere:Spell_group + region:Spell_group,
+  formula_b = ~ Spell_group,
+  formula_xs = ~ Spell_group,
+  data = theta_dat,
+  starting_vals = c(a = 3, b = -4, xs = 28)
+)
+
+# 4. Add the full three-way interaction
+formula_list_spelling3way <- list(
+  formula_a = ~ Sex + region*Spell_group*hemisphere,
+  formula_b = ~ Spell_group,
+  formula_xs = ~ Spell_group,
+  data = theta_dat,
+  starting_vals = c(a = 3, b = -4, xs = 28)
+  
+)
+
+
+# Step2: Generate the starting values
+QTP_start_main <- gen_start_vectors(formula_list_main)
+QTP_start_regionHemisphere <- gen_start_vectors(formula_list_regionHemisphere)
+QTP_start_spelling2way <- gen_start_vectors(formula_list_spelling2way)
+QTP_start_spelling3way <- gen_start_vectors(formula_list_spelling3way)
+
+# Step 3: Fit the QTPME
+theta_QTPME1 <- fit_QTPME(formula_list_main, QTP_start_main)
+theta_QTPME2 <- fit_QTPME(formula_list_regionHemisphere, QTP_start_regionHemisphere)
+theta_QTPME3 <- fit_QTPME(formula_list_spelling2way, QTP_start_spelling2way)
+theta_QTPME4 <- fit_QTPME(formula_list_spelling3way, QTP_start_spelling3way)
+
+# Does the interactions on the intercept improve model fit?
+anova(theta_QTPME1, theta_QTPME2, theta_QTPME3, theta_QTPME4)
+
+# Create lists with the model outputs
+theta_mods <- list(
+  mod1 = theta_QTPME1,
+  mod2 = theta_QTPME2,
+  mod3 = theta_QTPME3,
+  mod4 = theta_QTPME4
+)
+```
+### Running QTPME Models for Alpha1
+
+
+```{r Running QTPME models for alpha1, echo = FALSE}
+# 1. Main effects only model
+formula_list_main <- list(
+  formula_a = ~ Sex + hemisphere + region + Spell_group,
+  formula_b = ~ Spell_group,
+  formula_xs = ~ Spell_group,
+  data = alpha1_dat,
+  starting_vals = c(a = 3, b = -4, xs = 28)
+)
+
+# 2. Add topographic interaction
+formula_list_regionHemisphere <- list(
+  formula_a = ~ Sex + hemisphere + region + Spell_group + hemisphere:region,
+  formula_b = ~ Spell_group,
+  formula_xs = ~ Spell_group,
+  data = alpha1_dat,
+  starting_vals = c(a = 3, b = -4, xs = 28)
+)
+
+# 3. Add the spelling related two-way interactions
+formula_list_spelling2way <- list(
+  formula_a = ~ Sex + hemisphere + region + Spell_group + hemisphere:region + hemisphere:Spell_group + region:Spell_group,
+  formula_b = ~ Spell_group,
+  formula_xs = ~ Spell_group,
+  data = alpha1_dat,
+  starting_vals = c(a = 3, b = -4, xs = 28)
+)
+
+# 4. Add the full three-way interaction
+formula_list_spelling3way <- list(
+  formula_a = ~ Sex + region*Spell_group*hemisphere,
+  formula_b = ~ Spell_group,
+  formula_xs = ~ Spell_group,
+  data = alpha1_dat,
+  starting_vals = c(a = 3, b = -4, xs = 28)
+  
+)
+
+
+# Step2: Generate the starting values
+QTP_start_main <- gen_start_vectors(formula_list_main)
+QTP_start_regionHemisphere <- gen_start_vectors(formula_list_regionHemisphere)
+QTP_start_spelling2way <- gen_start_vectors(formula_list_spelling2way)
+QTP_start_spelling3way <- gen_start_vectors(formula_list_spelling3way)
+```
+
+
+```{r Error in fitting the alpha1 QTPME, echo = TRUE}
+# Step 3: Fit the QTPME
+try(alpha1_QTPME1 <- fit_QTPME(formula_list_main, QTP_start_main))
+try(alpha1_QTPME2 <- fit_QTPME(formula_list_regionHemisphere, QTP_start_regionHemisphere))
+try(alpha1_QTPME3 <- fit_QTPME(formula_list_spelling2way, QTP_start_spelling2way))
+try(alpha1_QTPME4 <- fit_QTPME(formula_list_spelling3way, QTP_start_spelling3way))
+
+```
+The first time using fit_QTPME_grid() can take a long time, because you are giving it a wide range of values to investigate in order to get convergence. However, once it converges you know what those starting values are! Thus, here these models should be quick because we modified their starting values to be very close to the ones that led to an initial convergence. 
+
+```{r Using the MVP function to identify the starting values and fit the model, echo = TRUE}
+# Use the fit_QTPME_grid() function on the formula lists created above
+alpha_QTPME1_list <- fit_QTPME_grid(
+  formula_list_main,
+  a_vals  = seq(-0.5, 1.0, by=.25),
+  b_vals  = seq(-0.05, 0.05, by=.025),
+  xs_vals = seq(19, 30, by=1)
+)
+
+alpha_QTPME2_list <- fit_QTPME_grid(
+  formula_list_regionHemisphere,
+  a_vals  = seq(-0.5, 1.0, by=.25),
+  b_vals  = seq(-0.05, 0.05, by=.025),
+  xs_vals = seq(19, 30, by=1)
+)
+
+alpha_QTPME3_list <- fit_QTPME_grid(
+  formula_list_spelling2way,
+  a_vals  = seq(-0.5, 1.0, by=.25),
+  b_vals  = seq(-0.05, 0.05, by=.025),
+  xs_vals = seq(19, 30, by=1)
+)
+
+alpha_QTPME4_list <- fit_QTPME_grid(
+  formula_list_spelling3way,
+  a_vals  = seq(-0.5, 1.0, by=.25),
+  b_vals  = seq(-0.05, 0.05, by=.025),
+  xs_vals = seq(19, 30, by=1)
+)
+
+# Extracting the model from the list objects
+alpha_QTPME1 <- alpha_QTPME1_list$fit
+alpha_QTPME2 <- alpha_QTPME2_list$fit
+alpha_QTPME3 <- alpha_QTPME3_list$fit
+alpha_QTPME4 <- alpha_QTPME4_list$fit
+
+# Does the interactions on the intercept improve model fit?
+anova(alpha_QTPME1, alpha_QTPME2, alpha_QTPME3, alpha_QTPME4)
+
+# Create lists with the model outputs
+alpha1_mods <- list(
+  mod1 = alpha_QTPME1,
+  mod2 = alpha_QTPME2,
+  mod3 = alpha_QTPME3,
+  mod4 = alpha_QTPME4
+)
+
+```
+```{r Save the model objects for each frequency band}
+# Change the working directory
+setwd(clean_model_output)
+
+# Save the ARFA data with the IRT scores
+saveRDS(delta_mods, "delta_mod.rds")
+saveRDS(theta_mods, "theta_mod.rds")
+saveRDS(alpha1_mods, "alpha1_mod.rds")
+```

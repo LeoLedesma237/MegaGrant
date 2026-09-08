@@ -1,0 +1,8 @@
+"0","# Keep the design matrix for plotting purposes"
+"0","design_matrix <- subjects_crossed_design %>%"
+"0","  arrange(Spell_group, Sex, ID, hemisphere, region) %>%"
+"0","  mutate(intercept = 1) %>%"
+"0","  select(intercept, SexM:hem_parietal)"
+"0","  "
+"0","# View the first few rows"
+"0","head(design_matrix)"

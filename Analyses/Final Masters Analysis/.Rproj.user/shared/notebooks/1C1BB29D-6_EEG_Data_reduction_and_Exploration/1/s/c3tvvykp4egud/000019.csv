@@ -1,0 +1,8 @@
+"0",""
+"0","final_dat %>%"
+"0","  ggplot(aes(x= FB, y = logit_relative_power, fill = Spell_group)) +"
+"0","  facet_wrap(~hemisphere + region, nrow = 2) +"
+"0","  geom_boxplot() +"
+"0","  labs(x = ""Frequency Bands"", y = ""Logit(Relative Power)"") + "
+"0","  theme_clean()"
+"0",""

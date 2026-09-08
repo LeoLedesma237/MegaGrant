@@ -1,0 +1,635 @@
+---
+title: "2) Exploring ARFA and GRM"
+output: html_document
+date: "2026-06-26"
+---
+
+```{r Universal code block setting}
+knitr::opts_chunk$set(echo = FALSE)
+knitr::opts_chunk$set(message = FALSE)
+knitr::opts_chunk$set(comment = NULL)
+knitr::opts_chunk$set(warning = FALSE)
+
+```
+
+
+```{r loading in the packages, warning = FALSE, echo = TRUE}
+library(psych) # fa.parallel()
+library(tidyverse)
+library(gt)
+library(skimr) #skim()
+library(kableExtra) #kbl()
+library(mirt) #mirt()
+library(caret) #findCorrelation()
+library(ggmirt) #tracePlot()
+library(patchwork)
+```
+
+```{r specifying inputs and outputs}
+# Specify the pathway to where the MegaGrant data is
+raw_data_input <- '~/GitHub/MegaGrant/Analyses/Final Masters Analysis/data'
+  
+# Specify the output to where we want our data to be saved
+clean_data_output <- "~/GitHub/MegaGrant/Analyses/Final Masters Analysis/data"
+
+# Specify the output for saving tables
+save_table_output <- "~/GitHub/MegaGrant/Analyses/Final Masters Analysis/tables"
+```
+
+# Reading in ARFA Subtest Dataset
+
+Here we will be reading in the ARFA spelling error data. This data has already been processed from an earlier script where each item had the potential to have several different types of errors. For example, each item had 7 variables where scores were given to indicate errors or even Russian words were used. No errors were rows where each of the 7 variables had all 0's, which was most of the dataset. What we are reading in below are **sum of errors for each item** capped at two (0, 1, 2). We capped it at two because that was recommended to us.
+
+The task while in Russian, we can translate the 22 items down below:
+
+1. Pardon
+2. Compromise
+3. Disciplined
+4. Gouache
+5. Fairly
+6. Greenhouse
+7. Supernatural
+8. Uninspired
+9. Away
+10. Trajectory
+11. Rely
+12. Puddle
+13. The flower couldn't grow long without being watered
+14. At this bachelorette party, all the girls were inmarried
+15. The birdcatcher waiter in the forest until midnight
+16. Not all Zurich residents speak French
+17. They hate sunbathing
+18. She had nothing to thank him for
+19. The train arrived at the northeast station
+20. At ninety-five years old, her heart was still working well
+21. What time did he sent out to meet the guests
+22. The warrior is skilled with the sword
+
+The participant was played an audio recording of the words/sentences and then had to spell it out correctly.
+
+
+```{r Reading in the data, warning= FALSE}
+# Reading in the ARFA data
+setwd(raw_data_input)
+ARFA <- readRDS("1_ARFA.rds")
+```
+
+### Visualizing ARFA Spelling Data Descriptives for Error
+
+```{r Visualize the ARFA spelling data errors, message=FALSE}
+# Aesthetics (Leo version)
+theme_clean <- function() {
+  theme_minimal() +
+    theme(legend.position = "bottom",
+          panel.grid.minor = element_blank(),
+          plot.title = element_text(hjust = 0.5)) 
+}
+
+# Create a summary table for Total Errors Score 
+describe(ARFA$Total_Error) %>%
+  round(2) %>%
+  gt() %>%
+  tab_header(title = "Descriptive Statistics of Spelling Total Error Score") %>%
+  tab_style(
+    style = cell_text(align = "center"),
+    locations = cells_body(columns = everything()))
+
+# Number of unique IDs plus min and max scores
+unique_Ids <- length(unique(ARFA$ID))
+mean_score <- round(mean(ARFA$Total_Error),1)
+sd_score <- round(sd(ARFA$Total_Error),1)
+skew_score <- round(skew(ARFA$Total_Error),2)
+min_score <- min(ARFA$Total_Error)
+max_score <- max(ARFA$Total_Error)
+
+# Create a histogram of raw error sum score
+ARFA %>%
+  ggplot(aes(x = Total_Error)) +
+  geom_histogram(color = "black", fill = "white", bins = 20) +
+  labs(title = paste0("Total Spelling Item Error Score Distribution\n(n= ", unique_Ids,
+                      "; mean =", mean_score,"; sd = ",sd_score, "; skew = ",skew_score ,"; min = ",min_score,"; max = ",max_score,")")) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.05))) +
+  labs(x = "Total Spelling Error", y = NULL) +
+  theme_clean()
+
+# Create a data frame with frequency of error by item
+item_err_freq <- ARFA %>%
+  select(- Total_Error) %>%
+  pivot_longer(cols = -ID,
+               names_to = "Items",
+               values_to = "Error") %>%
+  group_by(Items, Error) %>%
+  summarise(count = length(ID)) %>% 
+  mutate(Error = factor(Error)) %>%
+  ungroup()
+
+# Create a factor with the levels of interest for plotting purposes
+item_err_freq <- item_err_freq %>%
+  mutate(Items = factor(Items, levels = paste0("SP_ER",22:1)),
+         Error = factor(Error, levels = c("2", "1", "0")))
+
+# Generate a plot
+item_err_freq %>%
+  ggplot(aes(x = Items, y = count, fill = Error)) +
+  geom_col() +
+  theme_clean() +
+  scale_fill_brewer(palette = "Paired") +
+  labs(title = "Frequency of Number of Errors by Item") +
+  coord_flip()
+
+# Select only the items from ARFA
+ARFA_items <- select(ARFA, SP_ER1:SP_ER22)
+
+# Get the proportion of scores for each item
+result <- lapply(ARFA_items, function(x) {
+  tab <- table(x)
+  prop.tab <- round(prop.table(tab), 2)
+  data.frame(prop.tab) %>% rename(score = x, prob = Freq)
+})
+
+# Bind the rows and include item name information
+ARFA_response_prob <- bind_rows(result, .id = "Item")
+
+# Convert information into wide formar
+ARFA_response_prob_wide <- ARFA_response_prob %>%
+  pivot_wider(names_from = score, values_from = prob)
+
+# Create a gt() table for our ARFA response probabilities
+Table1A <- ARFA_response_prob_wide %>%
+  gt() %>%
+  tab_options(
+    table.font.size = 11,           # make tighter if needed
+    table.width = pct(45)           # helps side-by-side fit
+  ) %>%
+  tab_header(
+    title = "A: ARFA Subtest Probability of Response Category Endorsement by Item"   # Required: your main title
+  )
+Table1A
+```
+
+
+### Switching Spelling Errors to Spelling Scores
+
+In this section we have decided to take each item and subtract its error score from the value 2. Essentially this changes the direction of the data, such that if no error mistakes were made on an item, then they would get a score of 2. Additionally, if someone made 2 or more error mistakes for an item, then their spelling score will be a 0. 
+
+Below we have a table essentially ordering items by their difficulty, with item means closer to 0 representing harder items while items closer to 2 being easier. Based on this we can see that items 1, 9 and 2 were considered predominalty easy while items 21 and 16 were harder. 
+
+```{r switching errors to scores}
+# Extract just the ARFA items
+ARFA_items <- select(ARFA, SP_ER1:SP_ER22) 
+
+# Rename the items so that it looks cleaner in plots and tables
+names(ARFA_items) <- paste0("Item ",1:22)
+
+# Change the items to represent scores rather than errors
+ARFA_items <- 2 - ARFA_items
+```
+
+
+```{r Presenting the Descriptive of ARFA Data as Spelling Scores}
+# Create a new dataset to represent the spelling scores
+ARFA2 <- cbind(ID = ARFA$ID, ARFA_items)
+
+# Raw summed scores from your response data
+ARFA2$raw_scores <- rowSums(ARFA_items, na.rm = TRUE)
+
+# Create a summary table for Total Errors Score 
+describe(ARFA2$raw_scores) %>%
+  round(2) %>%
+  gt() %>%
+  tab_header(title = "Descriptive Statistics of Total Spelling Score") %>%
+  tab_style(
+    style = cell_text(align = "center"),
+    locations = cells_body(columns = everything()))
+
+# Number of unique IDs plus min and max scores
+unique_Ids <- length(unique(ARFA2$ID)) 
+mean_score <- round(mean(ARFA2$raw_scores),1)
+sd_score <- round(sd(ARFA2$raw_scores),1)
+skew_score <- round(skew(ARFA2$raw_scores),2)
+min_score <- min(ARFA2$raw_scores)
+max_score <- max(ARFA2$raw_scores)
+
+# Create a histogram of raw error sum score
+ARFA2 %>%
+  ggplot(aes(x = raw_scores)) +
+  geom_histogram(color = "black", fill = "white", bins = 20) +
+  labs(title = paste0("Total Spelling Score Distribution\n(n= ", unique_Ids,
+                      "; mean =", mean_score,"; sd = ",sd_score, "; skew = ",skew_score ,"; min = ",min_score,"; max = ",max_score,")")) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.05))) +
+  labs(x = "Total Spelling Score", y = NULL) +
+  theme_clean()
+
+# Create a data frame with frequency of error by item
+item_score_freq <- ARFA2 %>%
+  select(- raw_scores) %>%
+  pivot_longer(cols = -ID,
+               names_to = "Items",
+               values_to = "Scores") %>%
+  group_by(Items, Scores) %>%
+  summarise(count = length(ID)) %>% 
+  mutate(Scores = factor(Scores)) %>%
+  ungroup()
+
+# Create a factor with the levels of interest for plotting purposes
+item_score_freq <- item_score_freq %>%
+  mutate(Items = factor(Items, levels = paste0("Item ",22:1)),
+         Scores = factor(Scores, levels = c("2", "1", "0")))
+
+# Generate a plot
+item_score_freq %>%
+  ggplot(aes(x = Items, y = count, fill = Scores)) +
+  geom_col() +
+  theme_clean() +
+  scale_fill_brewer(palette = "Paired") +
+  labs(title = "Frequency of Number of Scores by Item") +
+  coord_flip()
+
+# Get the proportion of scores for each item
+result <- lapply(ARFA_items, function(x) {
+  tab <- table(x)
+  prop.tab <- round(prop.table(tab), 2)
+  data.frame(prop.tab) %>% rename(score = x, prob = Freq)
+})
+
+# Bind the rows and include item name information
+ARFA_response_prob <- bind_rows(result, .id = "Item")
+
+# Convert information into wide formar
+ARFA_response_prob_wide <- ARFA_response_prob %>%
+  pivot_wider(names_from = score, values_from = prob)
+
+# Create a gt() table for our ARFA response probabilities
+Table1A <- ARFA_response_prob_wide %>%
+  gt() %>%
+  tab_options(
+    table.font.size = 11,           # make tighter if needed
+    table.width = pct(45)           # helps side-by-side fit
+  ) %>%
+  tab_header(
+    title = "A: ARFA Subtest Probability of Response Category Endorsement by Item"   # Required: your main title
+  )
+Table1A
+```
+
+
+
+
+# Preparing for a Graded Response Model
+
+The following next sections are heavily inspired by: 
+
+- "Getting started with the graded response model: An introduction and tutorial in R" by Rizqy Amelia Zein and Hanif Akhtar
+
+
+### Testing Data Unidimensionallity
+
+Before we can specify the GRM on our spelling data, we need to investigate that our data is **unidimensional**. This means that the items within our data have a similar general correlation with each other and that there are not subset of items that correlate highly with each other, which would indicate that they may be measuring something kinda different or very specific to spelling errors.
+
+There are few ways to go about this. 
+
+The first approach is to calculate the polychoric corelations of the ARFA items and input that into the fa() function to run an exploratory factor analysis (EFA). We specified **two factors** to see how much of the variance each factor would explain. The first factor explains 47% of the variance while the second factor explains 3%. This gives us strong confidence that a general factor best explains the data since an additional factor basically contributed very little.
+
+
+```{r testing the data unidimensionality, echo = TRUE}
+# Create a matrix of polychoric correlations
+cor <- polychoric(ARFA_items)
+
+# Run an exploratory factor analysis with two factors
+efa2 <- fa(cor$rho, nfactors = 2, fm = "minres") # Now, running EFA.
+efa2$Vaccounted
+```
+
+Here we took output from the EFA and plotted it (called a Scree Plot), specifically the Eigenvalues across factors. While in the EFA we specified two, here we get as many Eigenvalues as there are items in the data. Similar to the output from above, almost all of the variance of the data is well explained by one factor, showcasing evidence for unidimensionality. Basically, sine only one factor is above the red line, we have unidimensionality.
+
+```{r Scree plot of the EFA}
+# Create a Scree Plot
+data.frame(Eigenvalue = efa2$values,
+           Factor = 1:length(efa2$values)) %>%
+  ggplot(aes(x = Factor, y = Eigenvalue)) +
+  geom_point(size = 3) +
+  geom_line() +
+  labs(title = "Scree Plot Using Eigenvalues from Exploratory Factor Analysis") +
+  geom_hline(yintercept= 1, linetype="dashed", color = "red") +
+  theme_clean()
+```
+
+The best approach, however, is to use the fa.parallel() function from the psych package. It also states that one factor best explains the data- thus we have evidence that **our data are unidimensional**.
+
+```{r Running a parallel analysis, echo = TRUE}
+# Parallel analysis
+fa.parallel(ARFA_items, fm="minres", fa="pc",  cor = "poly")
+```
+
+
+### Running a Polytomous Graded Response Model (GRM)
+
+From the descriptive section of the ARFA spelling task, after recoding the scores, we can see that each item contains 3 different types of categories (2 points, 1 point, 0 points) and that this information is in an ordinal scale (2 > 1 > 0). Thus, we can use a **polytomous graded response model** to basically estimate difficulty and discrimination parameters for each item. For the difficulty parameters, the model will be estimating two, which represent the level of ability where the item has a 50% change of having endorsement between category 0 and category 1 (and higher) and between category 1 and category 2.
+
+In the code below we essentially write mod = 'theta = 1-22', which basically means we are specifying a undimensional dataset with 22 items. 
+
+
+```{r number of participants before fitting GRM}
+# Number of participants (rows)
+cat("We have data from", nrow(ARFA_items),"participants\n\n")
+
+```
+
+```{r Running an IRT Model, message = FALSE, results='hide', echo = TRUE}
+# Specify the model
+mod <- paste0("theta = 1-", length(ARFA_items))
+
+# Run the mirt model and produce the theta scores
+fit_mirt <- mirt(ARFA_items, 
+                 1, 
+                 model = mod, 
+                 itemtype = "graded", 
+                 SE = TRUE, 
+                 technical = list(NCYCLES = 20000))
+```
+
+### Investigating Slope Parameters and Item Level Statistics
+
+To kill two birds with one stone- we are right now prioritizing identifying bad items. These can be defined as items with a low slope (less than 1) or an item level statistic with a very small p-value (less than .001)
+
+```{r Create a custom function to identify bad items}
+bad_GRM_items <- function(mod) {
+  # Obtain the parameter estimates for each item
+  coefs <- coef(mod, IRTpars = TRUE, simplify = TRUE)$items %>% data.frame()
+  coefs_df <- data.frame(Item =  row.names(coefs), coefs)
+  
+  # Obtain the item level statistics
+  item.fit <- itemfit(mod)
+  names(item.fit) <- c("Item", "S-χ²", "df", "RMSEA", "p")
+  
+  # Bad thresholds
+  bad_thresh_slope <- 1
+  bad_thresh_p <- .001
+  
+  # Identify all of the bad items
+  bad_items_slope <- coefs_df$Item[coefs_df$a < bad_thresh_slope]
+  bad_items_p <- item.fit$Item[item.fit$p < bad_thresh_p]
+  all_bad_items <- unique(c(bad_items_slope, bad_items_p))
+  
+  # Identify the good items
+  all_good_items <- coefs_df$Item[!coefs_df$Item %in% all_bad_items]
+  
+  # Return the following list as an output
+  list(total_items = length(all_good_items) + length(all_bad_items),
+       good_items = all_good_items, 
+       bad_items = all_bad_items,
+       bad_slopes = bad_items_slope, 
+       bad_p = bad_items_p)
+}
+
+```
+
+**First** iteration of the model. A custom function was used to evaluate the items based on the output of the model by investigating the item slopes and item diagnostic tests.
+
+```{r Investigating GRM model parameters part 1}
+# Keep the good items but print out the bad items information
+item_info <- bad_GRM_items(fit_mirt)
+
+# Print out information about the items
+cat("From the inputted",item_info$total_items,"items:\n")
+cat("-",length(item_info$good_items),"items had no problems\n")
+cat("-",paste(item_info$bad_slopes, collapse = ", "), "were identified to have bad slopes\n")
+cat("-",paste(item_info$bad_p, collapse = ", "), "were identified to have misfit\n")
+
+# Keep only the good items
+ARFA_items2 <- ARFA_items[,item_info$good_items]
+```
+**Second** iteration of the model. The model was fit to a subset of the data based on the removal of bad items from above. The custom function was now used on this data.
+
+```{r fit a second GRM model, message = FALSE, results='hide',}
+# Specify the model
+mod <- paste0("theta = 1-", length(ARFA_items2))
+
+# Run the mirt model and produce the theta scores
+fit_mirt <- mirt(ARFA_items2, 
+                 1, 
+                 model = mod, 
+                 itemtype = "graded", 
+                 SE = TRUE, 
+                 technical = list(NCYCLES = 20000))
+
+# Keep the good items but print out the bad items information
+item_info <- bad_GRM_items(fit_mirt)
+
+```
+
+```{r Print the bad items for the second GRM model}
+# Print out information about the items
+cat("From the inputted",item_info$total_items,"items:\n")
+cat("-",length(item_info$good_items),"items had no problems\n")
+cat("-",paste(item_info$bad_slopes, collapse = ", "), "were identified to have bad slopes\n")
+cat("-",paste(item_info$bad_p, collapse = ", "), "were identified to have misfit\n")
+
+# Keep only the good items
+ARFA_items3 <- ARFA_items2[,item_info$good_items]
+```
+**Third** iteration of the model. The model was fit to a subset of the data based on the removal of bad items from above. The custom function was now used on this data. Below we see that there were no item problems so we are ready to proceed.
+
+```{r fit a third GRM model, message = FALSE, results='hide',}
+# Specify the model
+mod <- paste0("theta = 1-", length(ARFA_items3))
+
+# Run the mirt model and produce the theta scores
+fit_mirt <- mirt(ARFA_items3, 
+                 1, 
+                 model = mod, 
+                 itemtype = "graded", 
+                 SE = TRUE, 
+                 technical = list(NCYCLES = 20000))
+
+# Keep the good items but print out the bad items information
+item_info <- bad_GRM_items(fit_mirt)
+
+```
+
+
+```{r Print the bad items for the third GRM model}
+# Print out information about the items
+cat("From the inputted",item_info$total_items,"items:\n")
+cat("-",length(item_info$good_items),"items had no problems\n")
+cat("-",paste(item_info$bad_slopes, collapse = ", "), "were identified to have bad slopes\n")
+cat("-",paste(item_info$bad_p, collapse = ", "), "were identified to have misfit\n")
+
+
+```
+
+### Checking for Local Dependence
+
+No correlation of residuals exceed 0.2, which means we are good! (No local dependence). We used I think it's called Yen's Q3 statistics.
+
+```{r running the Q3 statistic, echo = TRUE, results = 'hide'}
+# Obtaining the residual correlations
+q3 <- residuals(fit_mirt, type = "Q3")
+```
+
+```{r Examining the GRM residuals, echo = TRUE}
+# Checking for local dependence
+findCorrelation(q3, cutoff = 0.2, verbose = T)
+```
+
+### Overall Model Performance
+
+Next we can use the `M2()` function to get a sense of model fit. We set the type to be equal to C2 because that provides the best results for polytomous models. The M2 statistics is conceptually similar to the chi-square statistics (X2) in SEM, such that the null hypothesis means the model is fitting the data well. Our results are significant, which means it does not- but it is commonly known that a lot of times this test will be significant if the sample size is pretty large, which ours is.
+
+Technically if we were to go off thresholds (even though we are advised not to), the model fit indices produced below show that the model does a good job at capturing the data.
+
+```{r Graded response model fit}
+# Show the overall goodness of fit statistic for the model (M statistic, similar to G and Chi-square)
+M2(fit_mirt, type = "C2") %>% round(3)
+```
+
+
+```{r Obtain the Item Parameters of the Final GRM Model, echo = TRUE, results= 'hide'}
+# Obtain the parameter estimates for each item
+coefs <- coef(fit_mirt, IRTpars = TRUE, simplify = TRUE) # Saving model parameters (item discrimination (a) and threshold (b)) in a data frame.
+
+# Get the model summary (factor loadings and communality)
+mirt_sum <- summary(fit_mirt) # Displaying factor loadings and commonality.
+
+# Create a dataframe from both objects that have item information
+item_info <- cbind( coefs$items, mirt_sum$rotF, mirt_sum$h2) %>% data.frame()
+
+```
+
+```{r Print the item parameters, echo = FALSE}
+# Some data cleaning
+rownames(item_info) <- NULL
+item_info <- item_info %>% mutate_if(is.numeric, ~round(., 3)) # round
+item_info <- cbind(items = names(ARFA_items3), item_info) %>% data.frame()
+names(item_info) <- c("Item", "a (discrim.)", "b1", "b2", "λ (loading)", "h² (communality)")
+
+# Save the table
+table_name = "Table1_ARFA_IRT.csv"
+full_table_name = file.path(save_table_output, table_name)
+write.csv(item_info, full_table_name, row.names = FALSE, quote = FALSE)
+
+# Print the table
+Table1A <- item_info %>%
+  gt() %>%
+  tab_options(
+    table.font.size = 11,           # make tighter if needed
+    table.width = pct(45)           # helps side-by-side fit
+  ) %>%
+  tab_header(
+    title = "A: Item Parameters"   # Required: your main title
+  )
+
+
+Table1A
+```
+
+
+```{r Displaying IRT plots, echo = FALSE, message = FALSE, fig.height= 8}
+# Create a trace plot and save it as p
+p <- tracePlot(fit_mirt, title = "A: Item Probability Functions")
+
+# reorder facet variable numerically
+item_levels <- unique(p$data$var)
+item_levels <- item_levels[order(as.numeric(str_extract(item_levels, "\\d+")))]
+p$data$var <- factor(p$data$var, levels = item_levels)
+
+# Make the tracePlot object prettier
+p1 <- p +
+  labs(color = "Response Categories") +
+  scale_color_manual(values = c("#6A0DAD",   # dark/medium purple
+                                "#9F7AEA",   # medium-bright purple
+                                "#D6BCFA"),
+                     labels = c("0 Points", "1 Point", "2 Points")) +  # light lavender-purple
+  theme_clean()
+
+p1
+
+```
+
+
+
+```{r Showing the information and reliability incormation curve}
+# Plot the conditional reliability
+# p2 <- conRelPlot(fit_mirt, title = "Reliability of the CFIT Data")
+
+# Creating the information curve by hand
+info_reliability_curve <- data.frame(
+  S = seq(-4, 4, by =.10)) %>%
+  mutate(info = testinfo(fit_mirt, S),
+         se = 1/sqrt(info),
+         relia = info/(info + 1))
+
+# Convert dataset to long- remove se associated with reliability
+info_reliability_curve_long <- info_reliability_curve %>%
+  pivot_longer(cols = c(info,relia))
+info_reliability_curve_long$se[info_reliability_curve_long$name == "relia"] <-NA
+
+# Make it prettier
+info_reliability_curve_long <- info_reliability_curve_long %>% 
+  mutate(name = ifelse(name == "info", "Information", "Reliability"))
+
+# Plot the information curve
+p2 <- info_reliability_curve_long %>%
+  filter(name == "Information") %>%
+  ggplot(aes(x= S, y = value)) +
+  geom_line(aes(y = se), linetype = "dashed") +
+  geom_line() +
+  labs(y = NULL, x = "Spelling Ability", title = "A: Final ARFA Subtest\nInformation Curve") +
+  theme_clean()
+
+# Plot the conditional relaibility curve
+p3 <- info_reliability_curve_long %>%
+  filter(name == "Reliability") %>%
+  ggplot(aes(x= S, y = value)) +
+  geom_line(aes(y = se), linetype = "dashed") +
+  geom_line() +
+  geom_hline(yintercept=0.7, linetype="dashed", color = "red") + 
+  labs(y = NULL, x = "Spelling Ability", title = "B: Final ARFA Subtest\nConditional Reliability Curve") +
+  theme_clean()
+
+# Show the information and reliability plots side by side
+p2 + p3
+
+# Paste a message about the theta levels that correspond between .7 and .8 reliability
+reliability_num <- filter(info_reliability_curve_long, name == "Reliability")
+reliability_70 <- reliability_num$S[reliability_num$value > .7]
+reliability_80 <- reliability_num$S[reliability_num$value > .8]
+
+cat("Reliability of .7 is present between",min(reliability_70),"and",max(reliability_70),"theta values")
+cat("Reliability of .8 is present between",min(reliability_80),"and",max(reliability_80),"theta values")
+```
+
+```{r Showing the relationship between raw sum scores and EAP scores}
+# Plot the raw scores against the EAP scores
+plot(fit_mirt, type = "EAPsum")
+
+# Extract EAP scores (or use MAP/WLE)
+eap_scores <- fscores(fit_mirt, method = "EAP")[, 1]
+
+# Create the plot
+EAP_df <- data.frame(ID = ARFA$ID, 
+                     raw_spell = ARFA2$raw_scores, # Original raw scores before item removal
+                     eap_spell = eap_scores)
+
+EAP_df %>%
+  ggplot(aes(x = eap_spell, y = raw_spell)) +
+  geom_point(alpha = 0.4, color = "steelblue") +
+  geom_smooth(method = "loess", color = "red", se = TRUE) +
+  labs(title = "Relationship between Raw Sum Scores and IRT EAP Theta",
+       x = "IRT Ability (EAP Theta)",
+       y = "Raw Summed Score") +
+  theme_clean()
+
+# Print the correlation between raw scores and EAP scores
+cat("The correlation between raw scores and EAP scores is:", round(cor(EAP_df$raw_spell, EAP_df$eap_spell),2))
+
+```
+
+```{r Saving the EAP scores, echo = TRUE}
+# Change the working directory
+setwd(clean_data_output)
+
+# Save the ARFA data with the IRT scores
+saveRDS(EAP_df, "2_ARFA_eap.rds")
+
+```

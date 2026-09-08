@@ -1,0 +1,8 @@
+"0","# Plotting the relationship between spelling performance and age"
+"0","comb_dat %>%"
+"0","  ggplot(aes(x = Age, y = eap_spell)) +"
+"0","  geom_point(alpha = .6) +"
+"0","  labs(x = ""Age (Years)"","
+"0","       y = ""EAP Spelling Scores"","
+"0","       color = ""Spell Group (EAP)"") +"
+"0","  theme_clean()"

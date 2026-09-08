@@ -1,0 +1,4 @@
+"0","# load required packages"
+"0","library(""lme4"")        # model specification / estimation"
+"0","library(""lmerTest"")    # provides p-values in the output"
+"0","library(""tidyverse"")   # data wrangling and visualisation"

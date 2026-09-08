@@ -1,0 +1,5 @@
+"0","# Change the working directory"
+"0","setwd(clean_data_output)"
+"0",""
+"0","# Save the ARFA data with the IRT scores"
+"0","saveRDS(final_dat, ""6_final.rds"")"

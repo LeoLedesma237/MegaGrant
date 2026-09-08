@@ -1,0 +1,8 @@
+"0",""
+"0","# Create lists with the model outputs"
+"0","delta_mods <- list("
+"0","  mod1 = delta_QTPME1,"
+"0","  mod2 = delta_QTPME2,"
+"0","  mod3 = delta_QTPME3,"
+"0","  mod4 = delta_QTPME4"
+"0",")"

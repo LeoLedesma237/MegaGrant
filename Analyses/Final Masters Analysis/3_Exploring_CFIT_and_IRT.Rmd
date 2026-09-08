@@ -1,0 +1,653 @@
+---
+title: "3) Exploring CFIT Using Item Response Theory Models"
+output: html_document
+date: "2026-06-29"
+---
+
+```{r Universal code block setting}
+knitr::opts_chunk$set(echo = FALSE)
+knitr::opts_chunk$set(message = FALSE)
+knitr::opts_chunk$set(comment = NULL)
+knitr::opts_chunk$set(warning = FALSE)
+
+```
+
+
+```{r loading in the packages, warning = FALSE, echo = TRUE}
+library(tidyverse)
+library(psych)
+library(gt)
+library(mirt) # mirt()
+library(kableExtra)
+library(caret) #findCorrelation() 
+library(ggmirt)  #testInfoPlot()
+library(patchwork)
+```
+
+
+```{r specifying inputs and outputs}
+# Specify the pathway to where the MegaGrant data is
+raw_data_input <- '~/GitHub/MegaGrant/Analyses/Final Masters Analysis/data'
+  
+# Specify the output to where we want our data to be saved
+clean_data_output <- "~/GitHub/MegaGrant/Analyses/Final Masters Analysis/data"
+
+# Specify the output for saving tables
+save_table_output <- "~/GitHub/MegaGrant/Analyses/Final Masters Analysis/tables"
+```
+
+# Reading in the CFIT data
+
+The CFIT Scale 2 Form B is a **timed** non-verbal fluid intelligence test. It contains 46 items and 4-subscales:
+
+- Series (12 items)
+- Classifications (14 items)
+- Matrices (12 items)
+- Conditions (8 items)
+
+
+
+```{r Reading in the data, warning= FALSE}
+# Reading in the CFIT data
+setwd(raw_data_input)
+CFIT <- readRDS("1_CFIT.rds")
+
+# Cleaning the data a bit
+CFIT_names <- names(CFIT)
+CFIT_names <- gsub("CFIT", "", CFIT_names)
+CFIT_names <- gsub("Item", "_", CFIT_names)
+names(CFIT) <- CFIT_names
+
+# Generate a total score
+CFIT$raw <- rowSums(select(CFIT, Sub1_1:Sub4_8))
+```
+
+### Missing Data
+
+We are quickly going to group items by subtest to assess for missing data. We will not remove anyone for having missing data since the IRT models are expected to be able to handle this.
+
+```{r Missing data check}
+# Create a list where each element corresponds to a subtest
+subtest_list <- list(
+  series = select(CFIT, Sub1_1:Sub1_12),
+  classification = select(CFIT, Sub2_1:Sub2_14),
+  matrices = select(CFIT, Sub3_1:Sub3_12),
+  conditions = select(CFIT, Sub4_1:Sub4_8)
+)
+
+# Check for missing data
+lapply(subtest_list, function(x) sum(is.na(x)))
+```
+
+```{r Exploring the item descriptives}
+# Aesthetics (Leo version)
+theme_clean <- function() {
+  theme_minimal() +
+    theme(legend.position = "bottom",
+          panel.grid.minor = element_blank(),
+          plot.title = element_text(hjust = 0.5)) 
+}
+
+# Create a summary table for Total Errors Score 
+describe(CFIT$raw) %>%
+  round(2) %>%
+  gt() %>%
+  tab_header(title = "Descriptive Statistics of CFIT Performance Score") %>%
+  tab_style(
+    style = cell_text(align = "center"),
+    locations = cells_body(columns = everything()))
+
+# Number of unique IDs plus min and max scores
+unique_Ids <- length(unique(CFIT$ID))
+mean_score <- round(mean(CFIT$raw),1)
+sd_score <- round(sd(CFIT$raw),1)
+skew_score <- round(skew(CFIT$raw),2)
+min_score <- min(CFIT$raw)
+max_score <- max(CFIT$raw)
+
+# Create a histogram of raw error sum score
+CFIT %>%
+  ggplot(aes(x = raw)) +
+  geom_histogram(color = "black", fill = "white", bins = 20) +
+  labs(title = paste0("CFIT Performance Score Distribution\n(n= ", unique_Ids,
+                      "; mean =", mean_score,"; sd = ",sd_score, "; skew = ",skew_score ,"; min = ",min_score,"; max = ",max_score,")")) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.05))) +
+  labs(x = "CFIT Raw Score", y = NULL) +
+  theme_clean()
+
+# Create a data frame with frequency of error by item
+item_score_freq <- CFIT %>%
+  select(- raw) %>%
+  pivot_longer(cols = -ID,
+               names_to = "Items",
+               values_to = "Score") %>%
+  group_by(Items, Score) %>%
+  summarise(count = length(ID)) %>% 
+  mutate(Score = factor(Score)) %>%
+  ungroup()
+
+# Create a factor with the levels of interest for plotting purposes
+item_score_freq <- item_score_freq %>%
+  mutate(Score = factor(Score, levels = c("0", "1")))
+
+# Generate a plot
+item_score_freq %>%
+  mutate(
+    subtest = str_split_i(Items, "_", 1),
+    Item_num = str_split_i(Items, "_", 2),
+    Item_num = factor(Item_num, 
+                      levels = 14:1)) %>%
+  ggplot(aes(x = Item_num, y = count, fill = Score)) +
+  geom_col() +
+  facet_wrap(~subtest, scales = "free") +
+  theme_clean() +
+  scale_fill_brewer(palette = "Paired") +
+  labs(title = "Frequency of Number of Errors by Item") +
+  coord_flip()
+
+# Select only the items from CFIT
+CFIT_items <- select(CFIT, Sub1_1:Sub4_8)
+
+# Get the proportion of scores for each item
+result <- lapply(CFIT_items, function(x) {
+  tab <- table(x)
+  prop.tab <- round(prop.table(tab), 2)
+  data.frame(prop.tab) %>% rename(score = x, prob = Freq)
+})
+
+# Bind the rows and include item name information
+CFIT_response_prob <- bind_rows(result, .id = "Item")
+
+# Convert information into wide formar
+CFIT_response_prob_wide <- CFIT_response_prob %>%
+  pivot_wider(names_from = score, values_from = prob)
+
+```
+
+We have the code to show the proportion of incorrect and correct items for the CFIT- but it is a long table and it does not provide us any useful information that we can't already infer from the previous plots.
+
+```{r currently hidden table of proportions of 0s and 1s across items, echo = TRUE}
+# Create a gt() table for our CFIT response probabilities
+Table1A <- CFIT_response_prob_wide %>%
+  gt() %>%
+  tab_options(
+    table.font.size = 11,           # make tighter if needed
+    table.width = pct(45)           # helps side-by-side fit
+  ) %>%
+  tab_header(
+    title = "A: CFIT Subtest Probability of Response Category Endorsement by Item"   # Required: your main title
+  )
+# Table1A
+
+```
+
+
+Technically a parallel analysis is better but I don't really care tbh. The main takeaway is most of the variance is explained by one factor, but there is evidence in the data present for a few very weak factors, which likely correspond to question similarity, since questions correspond to one of four subtests named: series, classification, matrices, conditions.
+
+```{r Running EFA on the CFIT Data}
+# Create a matrix of polychoric correlations
+CFIT_cor <- polychoric(CFIT_items)
+
+# Run an exploratory factor analysis with five factors
+efa2 <- fa(CFIT_cor$rho, nfactors = 5, fm = "minres") # Now, running EFA.
+efa2$Vaccounted
+
+```
+
+
+```{r Scree plot of the EFA}
+# Create a Scree Plot
+data.frame(Eigenvalue = efa2$values,
+           Factor = 1:length(efa2$values)) %>%
+  ggplot(aes(x = Factor, y = Eigenvalue)) +
+  geom_point(size = 3) +
+  geom_line() +
+  labs(title = "Scree Plot Using Eigenvalues from Exploratory Factor Analysis (CFIT)") +
+  geom_hline(yintercept= 1, linetype="dashed", color = "red") +
+  theme_clean()
+```
+
+
+### Running a 2PL, 4-factor 2PL, and Bi-Factor 2PL Model on the CFIT Data
+
+We chose not to fit a hierarhical model because a) it failed to converge (producing an error) and b) theoretically it is not that good of a representation of IQ.
+
+From the model comparison below, the Bi-Factor model produced the best fit (lowest AIC & BIC)
+
+```{r running MIRT on the CFIT data First Iteration, echo=FALSE, results='hide'}
+# Run a 2PL Model
+CFIT_2pl <- mirt(CFIT_items, 1, itemtype = "2PL")
+
+# Fitting a 4 factor correlated model
+CFIT_4factor <- mirt(
+  CFIT_items,
+  model = "
+  F1 = 1-12
+  F2 = 13-26
+  F3 = 27-38
+  F4 = 39-46
+  COV = F1*F2, F1*F3, F1*F4,
+        F2*F3, F2*F4,
+        F3*F4
+  ",
+  itemtype = "2PL"
+)
+
+# Create a vector indicating which specific factor each item belongs to
+specific <- c(rep(1, 12),   # items 1-12   → F1
+              rep(2, 14),   # items 13-26  → F2
+              rep(3, 12),   # items 27-38  → F3
+              rep(4, 8))    # items 39-46  → F4
+
+# Fit a bi-factor model to the data
+CFIT_bifactor <- bfactor(data = CFIT_items, 
+                         model = specific,     # this defines the specific factors
+                        itemtype = "2PL")
+
+
+```
+
+We don't care for the likelihood ratio tests below- what we are interested in is the AIC and BIC values, in which we see that the bi-factor model is the best fitting model for the data.
+
+```{r First round of model comparison for the IRT models}
+# Compare models to see if bi-factor is better than the 2PL
+anova(CFIT_2pl, CFIT_4factor, CFIT_bifactor) %>%
+  data.frame() %>%
+  mutate_if(is.numeric, ~round(., 3)) %>%
+  kbl(caption = "Model Fit Indices of the three CFIT IRT Models (First Round)") %>%
+  kable_paper(full_width = F)
+```
+
+
+### Printing Bi-Factor Model Output Summary (Problematic)
+
+We used the coef() function to produce discrimination (a) slopes for each item that correspond to the general factor and the specific-factor (question type). We do see some problems, in that some items have very very low slopes! (below 1). Thus, we should go ahead and remove these items. 
+
+```{r Print bifactor model summary}
+# Print the coefficients
+#coef(CFIT_bifactor, IRTpars = TRUE, simplify = TRUE)
+
+# Save the item slopes
+item_slopes <- coef(CFIT_bifactor, IRTpars = TRUE, simplify = TRUE)$items %>%
+  data.frame() %>%
+  select(a1:a5) %>%
+  round(2)
+
+# Identify good and bad items
+good_items <- row.names(item_slopes)[item_slopes$a1 >= 1]
+bad_items <- row.names(item_slopes)[item_slopes$a1 < 1]
+
+
+# Save a dataset that has the parameter information from the bi-factor model
+item_pars <- coef(CFIT_bifactor, IRTpars = TRUE, simplify = TRUE)$items %>%
+  data.frame() %>%
+  select(a1:d)
+
+# Introduce an item variable
+item_pars$item <- row.names(item_pars)
+
+# Extract rows that correspond to different subtests and save them as a list
+subtest_list <- list(
+  Sub1 = item_pars %>% filter(str_detect(item, "^Sub1")),
+  Sub2 = item_pars %>% filter(str_detect(item, "^Sub2")),
+  Sub3 = item_pars %>% filter(str_detect(item, "^Sub3")),
+  Sub4 = item_pars %>% filter(str_detect(item, "^Sub4"))
+)
+
+# Change the item info to just numbers
+subtest_list <- lapply(subtest_list, function(x) {
+  x$item <- as.character(str_split_i(x$item, "_", 2))
+  x
+})
+
+# making sure the variables are all in the same orientation for each list
+subtest_tables <- imap(subtest_list, function(df, subtest_name) {
+  df %>%
+    mutate(item_num = row_number()) %>%
+    select(item_num, item, a1, a2, a3, a4, a5, d) %>%
+    rename_with(
+      .fn = function(x) paste(subtest_name, x, sep = "_"),
+      .cols = -item_num
+    )
+})
+
+# Combine everything into one wide dataset
+wide_table <- reduce(subtest_tables, full_join, by = "item_num") %>% data.frame()
+wide_table_org <- wide_table %>% mutate_if(is.numeric, ~round(., 2)) 
+
+# Some data cleaning
+wide_table <- wide_table %>% mutate_if(is.numeric, ~round(., 2))
+wide_table[is.na(wide_table)] <- ""
+wide_table <- select(wide_table, - item_num)
+names(wide_table) <- rep(c("Item\nNum.","a1", "a2", "a3", "a4", "a5", "b"), 4)
+
+# Print the table with the item parameters
+wide_table %>%
+  kbl() %>%
+  add_header_above(c("Series" = 7, "Classifications" = 7, "Matrices" = 7, "Conditions" = 7)) %>%
+  kable_paper(full_width = F)
+
+# Save the table
+table_name = "Table_APPEND_B_1.csv"
+full_table_name = file.path(save_table_output, table_name)
+write.csv(wide_table_org, full_table_name, row.names = FALSE, quote = FALSE)
+```
+
+
+### Removing Problematic Items (Low Slopes) and Re-running a Unidimensional and Bi-Factor Model
+
+From the results above, the coefficients for each item, we decided to remove the following items:
+- subtest1: 3, 9, 10, 11, 12
+- subtest2: 4, 5, 7, 9, 10, 11, 12, 13, 14
+- subtest3: 12
+- subtest4: 6, 7, 8
+
+Looks like the bi-factor model failed to converge so we will go with the undimensional 2PL version
+
+
+```{r Removing problematic CFIT Items, echo = FALSE, results='hide'}
+# Remove these items from the data
+CFIT_rmvItms <- CFIT_items %>%
+  select(- bad_items)
+
+# Number of remaining items per factor
+substr(names(CFIT_rmvItms), 1, 4) %>% table()
+
+# Run the unidimensional model
+CFIT_2pl_rmvItms <- mirt(CFIT_rmvItms, 1, itemtype = "2PL")
+
+# Fitting a 4 factor correlated model
+CFIT_4factor_rmvItems <- mirt(
+  CFIT_rmvItms,
+  model = "
+  F1 = 1-7
+  F2 = 8-12
+  F3 = 13-23
+  F4 = 24-28
+  COV = F1*F2, F1*F3, F1*F4,
+        F2*F3, F2*F4,
+        F3*F4
+  ",
+  itemtype = "2PL"
+)
+
+# Create a vector indicating which specific factor each item belongs to
+specific <- c(rep(1, 7), 
+              rep(2, 5),  
+              rep(3, 11),   
+              rep(4, 5))    
+
+# Fit a bi-factor model to the data
+CFIT_bifactor_rmvItems <- bfactor(data = CFIT_rmvItms, 
+                                  model = specific,     # this defines the specific factors
+                                  itemtype = "2PL")
+
+```
+
+
+While the bi-factor model **DOES PRODUCE BETTER FIT INDICIES**- THE MODEL **FAILED TO CONVERGE** UP to 2,500 ITERATIONS. It seems that the Max-Change value is just stuck in some local maxima.
+
+```{r Show the model fit indices for the second round of IRT fitting}
+# Model Comparison
+anova(CFIT_2pl_rmvItms, CFIT_4factor_rmvItems, CFIT_bifactor_rmvItems)  %>%
+  data.frame() %>%
+  mutate_if(is.numeric, ~round(., 3)) %>%
+  kbl(caption = "Model Fit Indices of the three CFIT IRT Models (Second Round)") %>%
+  kable_paper(full_width = F)
+```
+
+
+### Local Dependence Check on the Unidimensional CFIT Model
+
+There is local dependence for the undimensional model (not good)
+
+```{r Local dependecy check on unidimensional CFIT model, echo = FALSE, results='hide'}
+# Extract the residuals from the models
+q3 <- residuals(CFIT_2pl_rmvItms, type = "Q3")
+
+# Find the items that have higher residual correlations with other items than the threshold
+LD_items <- findCorrelation(q3, cutoff = 0.20, verbose = F)
+```
+
+Below is the list of items that have local dependence with another item on the list
+
+```{r Show the local dependence correlations}
+# Print out the items
+LD_items
+```
+
+### Removing Items with Local Dependence
+
+To address the local dependence problem, we will be removing items based on the results above. Right now the problematic item pairs are: 
+
+Problematic row pairs (correlations)
+
+- row 25 & 26
+- row 26 & 24
+- row 28 & 6
+- row 3 & 4
+- row 4 & 8
+- row 6 & 7
+- row 8 & 10
+- row 8 & 9
+- row 14 and 13
+
+We will remove the following rows/items:
+
+- Remove: row 26: Sub4_3
+- Remove: row 6: Sub1_7
+- Remove: row 4: Sub1_5
+- Remove: row 8: Sub2_1
+- Remove: row 13: Sub3_1
+
+
+Second round!
+There was still local depedence after the initial removal of items above, so we also removed these items as well:
+
+- Remove: Sub4_1
+- Remove: Sub4_2
+- Remove: Sub1_4
+
+
+```{r dropping local dependent items in CFIT, results = 'hide'}
+# Create a data frame to quickly index what item number correspond to what items
+item_num <- data.frame(num = 1:length(CFIT_rmvItms), cbind(names(CFIT_rmvItms)))
+
+# Drop redundant items
+CFIT_rmvItmsv2 <- CFIT_rmvItms %>%
+  select(-Sub4_3,- Sub1_7, -Sub1_5, -Sub2_1, - Sub3_1)
+
+# Drop some more items (these items also showed local dependence after removal of above items)
+CFIT_rmvItmsv3 <- CFIT_rmvItmsv2 %>%
+  select(-Sub1_4 ,- Sub4_1, -Sub4_2)
+
+# Fit the 2PL model on new dataset
+CFIT_2pl_rmvMore <- mirt(CFIT_rmvItmsv3, 1, itemtype = "2PL")
+
+```
+
+```{r Check for local dependence in this 2PL model, results='hide'}
+# Identify if residual correlations exceed threshold, suggesting local dependence (Bad)
+q3 <- residuals(CFIT_2pl_rmvMore, type = "Q3")
+LD_items2 <- findCorrelation(q3, cutoff = 0.2, verbose = T)
+```
+
+There are no LD item pairs in the 2PL model after having several items removed
+
+```{r Print out the LD items in the 2PL Model}
+LD_items2
+```
+
+#### Final 2PL CFIT Model Parameters
+
+We lost quite a bit of items! But that should not be true problematic assuming that we still have good coverage for the information/conditional reliability curves.
+
+```{r Print the 2PL Model Parameters of Final Unidimensional Model}
+# Print the coefficients (slopes and thresholds) for each item
+item_pars2 <- coef(CFIT_2pl_rmvMore, IRTpars = TRUE, simplify = TRUE)$items %>%
+  data.frame() %>%
+  mutate_if(is.numeric, ~round(., 2)) 
+
+# Introduce an item variable
+item_pars2$item <- row.names(item_pars2)
+
+# Extract rows that correspond to different subtests and save them as a list
+subtest_list2 <- list(
+  Sub1 = item_pars2 %>% filter(str_detect(item, "^Sub1")),
+  Sub2 = item_pars2 %>% filter(str_detect(item, "^Sub2")),
+  Sub3 = item_pars2 %>% filter(str_detect(item, "^Sub3")),
+  Sub4 = item_pars2 %>% filter(str_detect(item, "^Sub4"))
+)
+
+# Change the item info to just numbers
+subtest_list2 <- lapply(subtest_list2, function(x) {
+  x$item <- as.character(str_split_i(x$item, "_", 2))
+  x
+})
+
+# making sure the variables are all in the same orientation for each list
+subtest_tables2 <- imap(subtest_list2, function(df, subtest_name) {
+  df %>%
+    mutate(item_num = row_number()) %>%
+    select(item_num, item, a, b) %>%
+    rename_with(
+      .fn = function(x) paste(subtest_name, x, sep = "_"),
+      .cols = -item_num
+    )
+})
+
+# Combine everything into one wide dataset
+wide_table2 <- reduce(subtest_tables2, full_join, by = "item_num") %>% data.frame()
+
+# Some data cleaning
+wide_table2 <- wide_table2 %>% mutate_if(is.numeric, ~round(., 2))
+wide_table2[is.na(wide_table2)] <- ""
+wide_table2 <- select(wide_table2, - item_num)
+names(wide_table2) <- rep(c("Item\nNum.","a", "b"), 4)
+
+# Print the table with the item parameters
+wide_table2 %>%
+  kbl(caption = "Final Items of the CFIT 2PL Model") %>%
+  add_header_above(c("Series" = 3, "Classifications" = 3, "Matrices" = 3, "Conditions" = 3)) %>%
+  kable_paper(full_width = F)
+
+
+```
+
+
+```{r M2 Statistic of the Final 2PL Model }
+# Print an omnibus test of the model
+M2(CFIT_2pl_rmvMore, type = "C2")  %>%
+  data.frame() %>%
+  mutate_if(is.numeric, ~round(., 4)) %>%
+  kbl(caption = "M2 Model Fit Plus Other Fit Indices for Final 2PL") %>%
+  kable_paper(full_width = F)
+
+```
+
+Item level diagnostics all look good! No item has a p-value less than 0.001
+
+```{r Showing the Item Level Diagnostics for the Final 2PL Model}
+# Print out the item fit statistics
+itemfit(CFIT_2pl_rmvMore) %>%
+  data.frame() %>%
+  mutate_if(is.numeric, ~round(., 4)) %>%
+  kbl(caption = "Item Level Diagnostics for Final 2PL CFIT Model") %>%
+  kable_paper(full_width = F)
+
+```
+
+### Information and Conditional Reliability Curve Shows Good Coverage for Lower Fluid Intelligence Ability
+
+```{r Showing the Information and Conditional Reliability Curve of the Final 2PL Model}
+# Use the correct plot functions to plot Item Information Function and Reliability
+#testInfoPlot(CFIT_2pl_rmvMore, title = "B: Test Information Function")
+#conRelPlot(CFIT_2pl_rmvMore, title = "Reliability of the CFIT Data")
+
+# Creating the information curve by hand
+info_reliability_curve <- data.frame(
+  G = seq(-4, 4, by =.10)) %>%
+  mutate(info = testinfo(CFIT_2pl_rmvMore, G),
+         se = 1/sqrt(info),
+         relia = info/(info + 1))
+
+# Convert dataset to long- remove se associated with reliability
+info_reliability_curve_long <- info_reliability_curve %>%
+  pivot_longer(cols = c(info,relia))
+info_reliability_curve_long$se[info_reliability_curve_long$name == "relia"] <-NA
+
+# Make it prettier
+info_reliability_curve_long <- info_reliability_curve_long %>% 
+  mutate(name = ifelse(name == "info", "Information", "Reliability"))
+
+# Plot the information curve
+p2 <- info_reliability_curve_long %>%
+  filter(name == "Information") %>%
+  ggplot(aes(x= G, y = value)) +
+  geom_line(aes(y = se), linetype = "dashed") +
+  geom_line() +
+  labs(y = NULL, x = "Fluid Intelligence", title = "A: Final CFIT 2PL\nInformation Curve") +
+  theme_clean()
+
+# Plot the conditional relaibility curve
+p3 <- info_reliability_curve_long %>%
+  filter(name == "Reliability") %>%
+  ggplot(aes(x= G, y = value)) +
+  geom_line(aes(y = se), linetype = "dashed") +
+  geom_line() +
+  geom_hline(yintercept=0.7, linetype="dashed", color = "red") + 
+  labs(y = NULL, x = "Fluid Intelligence", title = "B: Final CFIT 2PL\nConditional Reliability Curve") +
+  theme_clean()
+
+# Show the information and reliability plots side by side
+p2 + p3
+
+
+# Paste a message about the theta levels that correspond between .7 and .8 reliability
+reliability_num <- filter(info_reliability_curve_long, name == "Reliability")
+reliability_70 <- reliability_num$G[reliability_num$value > .7]
+reliability_80 <- reliability_num$G[reliability_num$value > .8]
+
+cat("Reliability of .7 is present between",min(reliability_70),"and",max(reliability_70),"theta values")
+cat("Reliability of .8 is present between",min(reliability_80),"and",max(reliability_80),"theta values")
+  
+```
+
+
+### CFIT EAP Scores vs Raw Sum Scores Do like Quite Different
+
+```{r Showing the relationship between raw sum scores and EAP scores}
+# Plot the raw scores against the EAP scores
+plot(CFIT_2pl_rmvMore, type = "EAPsum")
+
+# Extract EAP scores (or use MAP/WLE)
+eap_scores <- fscores(CFIT_2pl_rmvMore, method = "EAP")[, 1]
+
+# Create the plot
+EAP_df <- data.frame(ID = CFIT$ID, 
+                     raw_cfit = CFIT$raw, # Original raw scores before item removal
+                     eap_cfit = eap_scores)
+
+EAP_df %>%
+  ggplot(aes(x = eap_cfit, y = raw_cfit)) +
+  geom_point(alpha = 0.4, color = "steelblue") +
+  geom_smooth(method = "loess", color = "red", se = TRUE) +
+  labs(title = "Relationship between Raw Sum Scores and IRT EAP Theta",
+       x = "IRT Ability (EAP Theta)",
+       y = "Raw Summed Score") +
+  theme_clean()
+
+# Print the correlation between raw scores and EAP scores
+cat("The correlation between raw scores and EAP scores is:", round(cor(EAP_df$raw_cfit, EAP_df$eap_cfit),2))
+
+```
+
+```{r Saving the EAP scores, echo = TRUE, warning = FALSE}
+# Change the working directory
+setwd(clean_data_output)
+
+# Save the ARFA data with the IRT scores
+saveRDS(EAP_df, "3_CFIT_eap.rds")
+
+```
+

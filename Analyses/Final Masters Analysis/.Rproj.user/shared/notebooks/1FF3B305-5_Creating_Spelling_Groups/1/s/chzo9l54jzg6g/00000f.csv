@@ -1,0 +1,8 @@
+"0","try("
+"0","# run a quadratic to plateau regression"
+"0","spell.nls <- nls(eap_spell ~ SSquadp3xs(Age, a, b, jp), "
+"0","                 data = comb_dat)"
+"0",")"
+"2","Error in nls(eap_spell ~ SSquadp3xs(Age, a, b, jp), data = comb_dat) : 
+  singular gradient
+"

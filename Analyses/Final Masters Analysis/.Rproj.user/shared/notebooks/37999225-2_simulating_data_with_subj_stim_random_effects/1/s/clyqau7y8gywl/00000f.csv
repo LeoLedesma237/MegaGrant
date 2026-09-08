@@ -1,0 +1,5 @@
+"0","# set number of subjects and items"
+"0","n_subj     <- 100 # number of subjects"
+"0","n_ingroup  <-  25 # number of items in ingroup"
+"0","n_outgroup <-  25 # number of items in outgroup"
+"0",""

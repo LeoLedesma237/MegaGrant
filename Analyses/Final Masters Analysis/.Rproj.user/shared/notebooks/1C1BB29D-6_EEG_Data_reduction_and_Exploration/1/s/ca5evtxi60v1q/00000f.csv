@@ -1,0 +1,5 @@
+"0","# Specify the pathway to where the MegaGrant data is"
+"0","raw_data_input <- '~/GitHub/MegaGrant/Analyses/Final Masters Analysis/data'"
+"0","  "
+"0","# Specify the output to where we want our data to be saved"
+"0","clean_data_output <- ""~/GitHub/MegaGrant/Analyses/Final Masters Analysis/data"""

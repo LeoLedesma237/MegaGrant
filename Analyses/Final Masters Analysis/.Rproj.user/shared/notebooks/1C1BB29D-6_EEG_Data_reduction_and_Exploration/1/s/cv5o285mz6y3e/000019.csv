@@ -1,0 +1,2 @@
+"0","plot_power2(final_dat, FB, region_hemisphere, value_var = ""log_absolute_power"") +"
+"0","  labs(title = ""Log Absolute Power (z) by Frequency Band And\nRegion Hemisphere"")"

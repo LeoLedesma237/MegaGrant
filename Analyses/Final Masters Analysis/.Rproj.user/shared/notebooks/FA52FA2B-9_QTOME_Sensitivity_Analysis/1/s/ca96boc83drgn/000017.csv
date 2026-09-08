@@ -1,0 +1,5 @@
+"0","# Create a vector for the original estimates"
+"0","original_estimates <- c(fixe_effs, rand_effs)"
+"0",""
+"0","# Create a summary table of QTPME parameter estimated from the simulated data"
+"0","summarize_simulation(sims_recovery, alpha = 0.05, original_estimates)"

@@ -1,0 +1,484 @@
+---
+title: "5) Creating Spelling Groups"
+output: html_document
+date: "2026-06-27"
+---
+
+```{r Universal code block setting}
+knitr::opts_chunk$set(echo = FALSE)
+knitr::opts_chunk$set(message = FALSE)
+knitr::opts_chunk$set(comment = NULL)
+knitr::opts_chunk$set(warning = FALSE)
+
+```
+
+
+
+```{r loading in the packages, warning = FALSE, echo = TRUE}
+# Load in the package
+library(tidyverse)
+library(patchwork)
+library(sjPlot)
+library(nlraa)
+library(kableExtra)
+```
+
+
+```{r specifying inputs and outputs}
+# Specify the pathway to where the MegaGrant data is
+raw_data_input <- '~/GitHub/MegaGrant/Analyses/Final Masters Analysis/data'
+  
+# Specify the output to where we want our data to be saved
+clean_data_output <- "~/GitHub/MegaGrant/Analyses/Final Masters Analysis/data"
+
+# Specify the output for saving tables
+save_table_output <- "~/GitHub/MegaGrant/Analyses/Final Masters Analysis/tables"
+```
+
+
+
+```{r reading in the combined data, warning = FALSE}
+# Reading in the combined data
+setwd(raw_data_input)
+comb_dat <- readRDS("4_comb_dat.rds")
+```
+
+```{r view what the data looks like}
+head(comb_dat, 10) %>%
+  kbl(caption = "First 10 rows of the Combined Dataset") %>%
+  kable_paper(full_width = F)
+```
+
+### Viewing the Distribution of Scores by Spelling Group
+
+Below is the distribution of spelling scores for the raw approach and the EAP approach. The logic is very straight forward, separate good and poor spellers by using the **20% percentile** as a threshold- notice this results in the same group levels, frequencies within groups, and group locations (poor = left of the x-axis and good on the right).
+
+```{r Initial Creation of the Spelling Groups}
+# Aesthetics (Leo version)
+theme_clean <- function() {
+  theme_minimal() +
+    theme(legend.position = "bottom",
+          panel.grid.minor = element_blank(),
+          plot.title = element_text(hjust = 0.5),
+          plot.caption = element_text(hjust = 0.5)
+          ) 
+}
+
+# Create a custom function to generate a new grouping variable based on 20th percentine
+create_groups_20thPer <- function(x) {
+  thresh <- quantile(x, 0.20, na.rm = T)
+  ifelse(x <= thresh, "low", "high")
+}
+
+# Create the factor groupings for raw and EAP scores
+comb_dat$Spell_Group_Raw <- create_groups_20thPer(comb_dat$raw_spell)
+comb_dat$Spell_Group_EAP <- create_groups_20thPer(comb_dat$eap_spell)
+
+# Relevel the factors for plotting purposes
+comb_dat <- mutate(comb_dat, 
+       Spell_Group_Raw = factor(Spell_Group_Raw,
+                                levels = c("low", "high")),
+       Spell_Group_EAP = factor(Spell_Group_EAP,
+                                levels = c("low", "high")))
+
+# Create two violin plots of the low and high groups we created
+p1 <- comb_dat %>%
+  ggplot(aes(x = 1, y = raw_spell)) +           # dummy x
+  geom_violin(alpha = 0.8, trim = FALSE) +
+  scale_x_continuous(labels = NULL) +
+  theme_minimal(base_size = 14) +
+  geom_jitter(width = .35, alpha = .4 , size = 1, aes(color = Spell_Group_Raw)) +
+  coord_flip() +
+  labs(x = NULL, 
+       y = "Raw Spelling Scores",
+       color = "Spell Group (Raw)") +
+  theme_clean()
+
+p2 <- comb_dat %>%
+  ggplot(aes(x = 1, y = eap_spell)) +           # dummy x
+  geom_violin(alpha = 0.8, trim = FALSE) +
+  scale_x_continuous(labels = NULL) +
+  theme_minimal(base_size = 14) +
+  geom_jitter(width = .35, alpha = .4 , size = 1, aes(color = Spell_Group_EAP)) +
+  coord_flip() +
+  labs(x = NULL, 
+       y = "EAP Spelling Scores",
+       color = "Spell Group (EAP)") +
+  theme_clean()
+
+# Show both violin plots together
+p1 + p2
+```
+
+
+We also want to see if using the IRT approach in anyway helped us produced a different grouping that if we just use raw scores. We can investigate this by using a contingency table (also called cross-tabulation). Below we see that basically 16 people were shifted over from 654, for a change of 2.4%, which may not be a lot but it is still better than going with raw scores. But we cannot deny that basically there is extremely high agreement between the two, with 97.6% receiving the same classification. Hmm who knows.
+
+
+```{r Creating a cross tabulation or contingency table between the two spelling groups}
+# Create a cross tabulation
+tab_xtab(var.row = comb_dat$Spell_Group_Raw, 
+         var.col = comb_dat$Spell_Group_EAP, 
+         title = "Group Endorsement by Spelling Score Approach Contingency Table", show.row.prc = TRUE)
+```
+
+### Age Confounded with Spelling Performance
+
+Here we see a notable problem, and that's that most poor spellers are younger people in the sample, while in the older ages (25+ years), there are very few poor spellers. This will essentially be problematic for us in the subsequent EEG analysis and needs to be addressed.
+
+However, due to the dots overlapping each other in the figure, we are limited to know just by how much the disparities between good and poor spellers are across the ages. 
+
+```{r Problem with The Spelling Grouping}
+# Plotting the relationship between spelling performance and age
+comb_dat %>%
+  ggplot(aes(x = Age, y = eap_spell)) +
+  geom_point(alpha = .6) +
+  labs(x = "Age (Years)",
+       y = "EAP Spelling Scores",
+       color = "Spell Group (EAP)") +
+  theme_clean()
+
+
+# Plotting the relationship between spelling performance and age color coded with spell group factor
+p_org <- comb_dat %>%
+  mutate(Spell_Group_EAP = ifelse(Spell_Group_EAP == "high", "Good", "Poor"),
+         Spell_Group_EAP = factor(Spell_Group_EAP, levels = c("Poor", "Good"))) %>%
+  ggplot(aes(x = Age, y = eap_spell, color = Spell_Group_EAP)) +
+  geom_point(alpha = .6) +
+  labs(title = "A: Initial Scores",
+       x = "Age (Years)",
+       y = "EAP Spelling Scores",
+       color = "Spell Group (EAP)") +
+  theme_clean()
+
+p_org
+```
+
+
+
+```{r Creating an Age Group Variable Using Even Spaced Quantiles}
+# Create a custom function where you enter the vector of interest followed by how many bins
+age_group <- function(x, c) {
+  
+  # Create the cut offs
+  cut_offs <- quantile(x, probs = seq(0, 1, by = 1/c), na.rm = TRUE)
+  
+  # Fix the labels
+  labels <- paste0(round(cut_offs[-length(cut_offs)]), "-", round(cut_offs[-1]))
+  labels[length(labels)] <- paste0(round(cut_offs[length(cut_offs)-1]), "-", max(x, na.rm = TRUE))
+  
+  # Return the group label
+  cut(x, breaks = cut_offs, include.lowest = TRUE, labels = labels)
+}
+
+# Create the age group variable
+comb_dat$Age_group <- age_group(comb_dat$Age, 5)
+
+# Check the frequency of each group
+(tab <- table(comb_dat$Age_group))
+prop.table(tab) %>% round(2)
+```
+
+By creating an age group factor, we can now display a contingency table that quantifies the proportion of good and poor spellers across ages. We see that in 15-17 year group, 31% of the sample is poor spellers, while for  18+, it is between 12 and 15%. We need to find a way to make its near 20% across the age groups as we initially intended.
+
+```{r Contingency table of spelling groups and age groups}
+# Produce another contingency table
+tab_xtab(var.row = comb_dat$Age_group,
+         var.col = comb_dat$Spell_Group_EAP,
+         title = "Good vs Poor Spellers Across Age Groups Contingency Table", 
+         show.row.prc = TRUE)
+
+```
+
+
+### Using a Quadratic to Plateau Model to Control for Age Effects on Spelling Performance
+
+Below we are introducing the quadratic to plateau (QTP) model, which is a **non-linear model**. To fit this, we are using the `nls()` function which allows non-linear model specification in conjunction with the `SSquadp3xs()` help function. The latter is from the nlraa package and it is a self starter function, meaning that it takes care in picking the reasonable starting values for the QTP so we don't have to. 
+
+The equation itself is a bit tricky, but the main idea are as follows:
+
+1. There is a quadratic relationship between x and y up until a certain point in x
+2. At a specific value of x, the relationship turns into a plateau, meaning for every change in x, y stays the same
+3. The transition point is the same as the peak of a parabola in a regular quadratic function
+4. The model parameter estimates are the: intercept, instantaneous slope, join point (quadratic is not **freely estimated**)
+5. Essentially, this model requires the same degrees of freedom as a quadratic model (three parameters are estimated)
+
+
+Anyway, we basically fit the QTP model to the EAP scores using age as a predictor. We use the model parameters to generate fitted values. We subtract the EAP scores by the fitted values to get the model residuals, and then we classify the bottom 20th percentile residuals as low and the remaining 80% as high. Essentially, what we have done now is change the scoring to represent good and poor spellers for their respective age groups.
+
+### Unexpected Problem
+
+When we run a QTP model using nls() and SSquadp3xs(), we get the error of a **singular gradient**. Which basically means the model is stuck and cannot find the best parameter values to best represent the data.
+
+```{r Creating a spelling group using quadratic to plateau models, echo = TRUE}
+try(
+# run a quadratic to plateau regression
+spell.nls <- nls(eap_spell ~ SSquadp3xs(Age, a, b, jp), 
+                 data = comb_dat)
+)
+
+```
+We can get a hint to what the problem is below using the getInitial() function. Essentially. SSquadp3xs has identified the best starting values to be: a = -1.94; b = 0.13; c = 46.0. We can see that from these values there is a clear problem, specifically with the join point estimate, it is substantially larger than our max age value in our data. Thus, the starting values chosen are essentially preventing the model from functioning correctly.
+
+```{r Investigating the Chosen Starting Values, echo = TRUE}
+# What were the chosen starting values
+getInitial(
+  eap_spell ~ SSquadp3xs(Age, a, b, jp),
+  data = comb_dat
+)
+```
+
+### Choosing our Own Starting Values
+
+Technically ChatGPT chose these starting values but they worked! Notice all we did was basically change the join point to something more reasonable and the model worked.
+
+```{r Choosing Our Own Starting Values, echo = TRUE}
+# Specify a model with chosen starting values
+spell.nls <- nls(
+  eap_spell ~ ifelse(
+    Age < jp,
+    a + b*Age - 0.5*b*Age^2/jp,
+    a + 0.5*b*jp
+  ),
+  data = comb_dat,
+  start = list(a = -1, b = 0.2, jp = 18)
+)
+```
+
+### Additional Starting Values Because Why Not?
+
+This will be a good learning purpose, essentially, we are going to just mess with the join point, and run the model several times a fixed intercept and slope and a different joint points value. Then we will see which join point values led to a convergence followed by what the parameter estimates look like.
+
+```{r Choosing several join points to run the model}
+# Starting values for the join point
+join_points <- seq(1, max(comb_dat$Age))
+
+# Empty list to store successful fits
+model_output <- vector("list", length(join_points))
+
+for (ii in seq_along(join_points)) {
+
+  fit <- tryCatch(
+    nls(
+      eap_spell ~ ifelse(
+        Age < jp,
+        a + b * Age - 0.5 * b * Age^2 / jp,
+        a + 0.5 * b * jp
+      ),
+      data = comb_dat,
+      start = list(
+        a = -1,
+        b = 0.2,
+        jp = join_points[ii]
+      )
+    ),
+    error = function(e) NULL
+  )
+
+  # Save only successful fits
+  if (!is.null(fit)) {
+
+    coefs <- coef(fit)
+
+    model_output[[ii]] <- data.frame(
+      iteration = ii,
+      start_jp  = join_points[ii],
+      a          = unname(coefs["a"]),
+      b          = unname(coefs["b"]),
+      jp         = unname(coefs["jp"])
+    )
+  }
+}
+
+# Combine successful fits into one data frame
+results <- dplyr::bind_rows(model_output)
+
+# Print out the table
+results %>%
+  kbl(caption = "Joint Point Starting Values that Resulted in Model Convergence") %>%
+  kable_paper(full_width = F)
+
+```
+
+### Building A Function to Find Good Starting Values (Proof of Concept)
+
+This code here is just to prove that we can create a function to identify the best starting values to get a converged QTP. I really have no idea how this code works, it was provided by ChatGPT. Regardless, the implication here is that we can learn the details of this function, and then modify it to then make it work with our QTpME models if they failed to start due to a singularity error!
+
+
+```{r Identifying Starting Values that will lead to QTP convergence, echo = TRUE}
+fit_qtp <- function(data,
+                    a_vals = seq(-3, 1, by = 0.5),
+                    b_vals = seq(0.05, 0.5, by = 0.05),
+                    jp_vals = seq(18, 28, by = 1)) {
+  
+  starts <- expand.grid(
+    a = a_vals,
+    b = b_vals,
+    jp = jp_vals
+  )
+  
+  for(i in seq_len(nrow(starts))) {
+    
+    s <- as.list(starts[i, ])
+    
+    fit <- try(
+      nls(
+        eap_spell ~ ifelse(
+          Age < jp,
+          a + b*Age - 0.5*b*Age^2/jp,
+          a + 0.5*b*jp
+        ),
+        data = data,
+        start = s
+      ),
+      silent = TRUE
+    )
+    
+    if(!inherits(fit, "try-error")) {
+      message("Successful fit!")
+      print(s)
+      return(fit)
+    }
+  }
+  
+  stop("No starting values converged.")
+}
+
+```
+
+In this output we can see the starting values that led to model convergence from the custom function output.
+
+```{r Identified starting values that led to model convergence, echo = TRUE}
+# Fitting a QTP model with functioning starting values
+spell.nls <- fit_qtp(comb_dat)
+
+```
+
+
+Below is the model summary of the QTP- we can see that it came out okay!
+
+```{r Print the model summary of the QTP}
+# Print the model summary
+summary(spell.nls)
+```
+### Rescore the Spelling Groups Using the QTP Residuals
+
+Now we will rescore the data by getting the residuals from the QTP model, and specifying those at the bottom 20th percentile as the poor spellers. The interpretation of these values will not change to mean poor spellers compared to those of their same age peers.
+
+```{r Obtain the Fitted Values of the Model And Generate Spelling Groups From the Residuals}
+# Extract model parameter information
+QTP_coefs <- round(coef(spell.nls),2)
+a <- QTP_coefs["a"]; b <- QTP_coefs["b"]; jp <- QTP_coefs["jp"]; 
+caption <- paste0("QTP model parameter estimates: a = ", a, "; b = ", b, "; jp = ", jp)
+
+# Using predict2_nls() function to get SE for fitted values across level of Age
+spell.nls.pred <- predict2_nls(spell.nls, newdata = NULL, interval = "confidence", level = 0.95)
+comb_dat$QTP_fitted <- spell.nls.pred$Estimate
+comb_dat$QTP_error <- comb_dat$eap_spell - comb_dat$QTP_fitted
+
+# Create the groups from the model residuals
+comb_dat$Spell_Group_EAP_corrected <- create_groups_20thPer(comb_dat$QTP_error)
+
+# Create another dataset with shorter variable names and variables of interest for analysis
+comb_dat2 <- comb_dat %>%
+  select(ID:Age, Age_group, Spell_group = Spell_Group_EAP_corrected)
+```
+
+
+```{r Visualize the Residual Mde Spelling Group in the Scatterplot, fig.height = 6, fig.width =9}
+# Plotting the relationship between spelling performance and age
+p_adj <- comb_dat %>%
+  mutate(Spell_Group_EAP_corrected = ifelse(Spell_Group_EAP_corrected == "high", "Good", "Poor"),
+         Spell_Group_EAP_corrected = factor(Spell_Group_EAP_corrected, levels = c("Poor", "Good"))) %>%
+  ggplot(aes(x = Age, y = eap_spell, color = Spell_Group_EAP_corrected)) +
+  geom_point(alpha = .6) +
+  geom_line(aes(x = Age, y = QTP_fitted), color = "black", linewidth = 1, alpha = .7) +
+  labs(title = "B: Age-Adjusted Scores",
+       x = "Age (Years)",
+       y = "EAP Spelling Scores",
+       color = "Spell Group (EAP)",
+       caption = caption) +
+  theme_clean()
+
+# Produce both plots
+p_org + p_adj
+```
+
+
+Lastly, we can create a contingency table to see whether or not we now have a better distribution of good and poor spellers across age groups and we can see that we do!
+  
+```{r Contingency table of spelling groups and age groups age corrected}
+# Produce another contingency table
+tab_xtab(var.row = comb_dat$Age_group, 
+         var.col = comb_dat$Spell_Group_EAP_corrected, 
+         title = "Good vs Poor Spellers Across Age Groups (Age Corrected) Contingency Table", 
+         show.row.prc = TRUE)
+
+```
+
+
+```{r Custom function created by Grok to return frequency and proportions for a contingency table}
+freq_prop_tab <- function(data, var1, var2, 
+                          type = "percent",     # "percent" or "prop"
+                          digits = 0,           # for percent; use 2 for proportion
+                          margin = 1) {         # 1 = row percentages (default)
+  
+  # Create the count table with margins
+  tab <- addmargins(xtabs(formula = reformulate(c(var1, var2)), data = data))
+  
+  # Create the proportion table
+  prop <- round(prop.table(xtabs(formula = reformulate(c(var1, var2)), data = data), 
+                           margin = margin), digits + 1)
+  
+  # Combine them
+  result <- tab
+  
+  # Get the body of the table (exclude total row and total column)
+  rows_body <- rownames(tab)[rownames(tab) != "Sum"]
+  cols_body <- colnames(tab)[colnames(tab) != "Sum"]
+  
+  if (type == "percent") {
+    values <- round(prop[rows_body, cols_body] * 100, digits)
+    result[rows_body, cols_body] <- sprintf("%d (%.0f%%)", 
+                                            tab[rows_body, cols_body], 
+                                            values)
+  } else {
+    # proportion
+    result[rows_body, cols_body] <- paste0(tab[rows_body, cols_body], 
+                                           " (", prop[rows_body, cols_body], ")")
+  }
+  
+  return(result)
+}
+
+```
+
+
+```{r Save the table with spelling group n by age groups}
+# Use the custom function to get the 
+tab1 <- freq_prop_tab(comb_dat, "Age_group", "Spell_Group_EAP", digits = 2) 
+tab2 <- freq_prop_tab(comb_dat, "Age_group", "Spell_Group_EAP_corrected", digits = 2) 
+
+# convert tables into dataframes
+tab1_df <- as.data.frame.matrix(tab1)
+tab2_df <- as.data.frame.matrix(tab2)
+tab1_df$Age_group <- row.names(tab1_df); tab2_df$Age_group <- row.names(tab2_df)
+row.names(tab1_df) <- NULL; row.names(tab2_df) <- NULL
+
+# Combine the tables together
+comb_tab_df <- rbind(tab1_df, tab2_df) %>% select(Age_group, everything())
+
+# Save the table
+table_name = "Table2_Spelling_Group_n.csv"
+full_table_name = file.path(save_table_output, table_name)
+write.csv(comb_tab_df, full_table_name, row.names = FALSE, quote = FALSE)
+
+```
+
+```{r Saving the Spelling Group Factor, echo = TRUE, warning = FALSE}
+# Change the working directory
+setwd(clean_data_output)
+
+# Save the ARFA data with the IRT scores
+saveRDS(comb_dat2, "5_comb_dat.rds")
+```
+

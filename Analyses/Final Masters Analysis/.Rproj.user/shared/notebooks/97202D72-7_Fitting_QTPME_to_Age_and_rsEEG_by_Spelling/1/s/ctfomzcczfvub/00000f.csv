@@ -1,0 +1,17 @@
+"0","# Step 3: Fit the QTPME"
+"0","try(alpha1_QTPME1 <- fit_QTPME(formula_list_main, QTP_start_main))"
+"2","Error in nlme.formula(log_absolute_power ~ SSquadp3xs(Age_min_c, a, b,  : 
+  Singularity in backsolve at level 0, block 1
+"
+"0","try(alpha1_QTPME2 <- fit_QTPME(formula_list_regionHemisphere, QTP_start_regionHemisphere))"
+"2","Error in nlme.formula(log_absolute_power ~ SSquadp3xs(Age_min_c, a, b,  : 
+  Singularity in backsolve at level 0, block 1
+"
+"0","try(alpha1_QTPME3 <- fit_QTPME(formula_list_spelling2way, QTP_start_spelling2way))"
+"2","Error in nlme.formula(log_absolute_power ~ SSquadp3xs(Age_min_c, a, b,  : 
+  Singularity in backsolve at level 0, block 1
+"
+"0","try(alpha1_QTPME4 <- fit_QTPME(formula_list_spelling3way, QTP_start_spelling3way))"
+"2","Error in nlme.formula(log_absolute_power ~ SSquadp3xs(Age_min_c, a, b,  : 
+  Singularity in backsolve at level 0, block 1
+"
